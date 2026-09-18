@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -e ".[dev,postgres,release]"
+
+      - name: Run tests
+        run: python -m pytest --cov=compromised_keys --cov-report=term-missing
+
+  quality:
+    name: Quality and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install development dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -e ".[dev,postgres,release]"
+
+      - name: Run repository policy hooks
+        run: pre-commit run --all-files
+
+      - name: Audit Python dependencies
+        run: python -m pip_audit --skip-editable
+
+      - name: Build package
+        run: python -m build
+
+      - name: Check package metadata
+        run: python -m twine check dist/*
+
+      - name: Smoke-test built wheel
+        run: |
+          python -m venv /tmp/compromised-keys-smoke
+          source /tmp/compromised-keys-smoke/bin/activate
+          WHEEL=$(find dist -name '*.whl' -print -quit)
+          python -m pip install "${WHEEL}[postgres,release]"
+          compromised-keys --version
+          compromised-keys --help
+          cd /tmp/compromised-keys-smoke
+          compromised-keys doctor --no-crtsh
+          compromised-keys export
+
+  container:
+    name: Container security
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build container image
+        run: docker build --pull --tag compromised-keys:ci .
+
+      - name: Smoke-test container
+        run: |
+          docker run --rm compromised-keys:ci --help
+          docker run --rm compromised-keys:ci doctor --no-crtsh
+
+      - name: Scan container image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db:2
+        with:
+          image-ref: compromised-keys:ci
+          format: table
+          exit-code: "0"
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          version: v0.74.0
+
+      - name: Block fixable high-severity vulnerabilities
+        env:
+          TRIVY_CACHE_DIR: ${{ github.workspace }}/.cache/trivy
+          TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db:2
+        run: >-
+          trivy image --scanners vuln --severity CRITICAL,HIGH
+          --ignore-unfixed --exit-code 1 compromised-keys:ci

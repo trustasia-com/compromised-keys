@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Runtime data
+*.db
+*.db-*
+*.db.*
+*.sqlite*
+cache/
+/data/
+.release-restore/
+*.log
+reports/
+
+# Credentials
+.env
+.env.*
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Test and tool output
+htmlcov/
+.coverage*
+.pytest_cache/
+.ruff_cache/
+.cache/

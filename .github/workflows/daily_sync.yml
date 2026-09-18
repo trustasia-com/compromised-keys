@@ -1,0 +1,262 @@
+name: Daily Data Sync
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: Use INITIAL_DB_PATH only when data-latest does not exist
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: daily-data-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Synchronize and publish data
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, compromised-keys-sync]
+    environment: data-production
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    env:
+      CRTSH_PG_DSN: postgresql://guest@crt.sh:5432/certwatch
+      CRTSH_MODE: postgres
+      COMPROMISED_KEYS_DATA_DIR: data/latest
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout trusted source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Check runner prerequisites
+        run: |
+          set -euo pipefail
+          command -v gh >/dev/null
+          AVAILABLE_KB=$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')
+          if [ "${AVAILABLE_KB:-0}" -lt 5242880 ]; then
+            echo "::error::At least 5 GiB of free runner disk is required."
+            exit 1
+          fi
+          echo "Runner free space: $((AVAILABLE_KB / 1024)) MiB"
+          echo "COMPROMISED_KEYS_CACHE_DIR=$RUNNER_TOOL_CACHE/compromised-keys-crl-cache" >> "$GITHUB_ENV"
+          REPORT_DIR="$RUNNER_TOOL_CACHE/compromised-keys-reports/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$REPORT_DIR"
+          chmod 700 "$REPORT_DIR"
+          echo "REPORT_DIR=$REPORT_DIR" >> "$GITHUB_ENV"
+          STATE_DIR="$RUNNER_TOOL_CACHE/compromised-keys-state"
+          mkdir -p "$STATE_DIR"
+          chmod 700 "$STATE_DIR"
+          echo "COMPROMISED_KEYS_DB=$STATE_DIR/compromised_keys.db" >> "$GITHUB_ENV"
+
+      - name: Install package
+        run: |
+          python -m venv "$RUNNER_TEMP/compromised-keys-venv"
+          source "$RUNNER_TEMP/compromised-keys-venv/bin/activate"
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install ".[postgres,release]"
+          echo "$RUNNER_TEMP/compromised-keys-venv/bin" >> "$GITHUB_PATH"
+        timeout-minutes: 15
+
+      - name: Restore verified history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOOTSTRAP_REQUESTED: ${{ inputs.bootstrap }}
+          INITIAL_DB_PATH: ${{ vars.INITIAL_DB_PATH }}
+        run: |
+          set -euo pipefail
+          rm -rf .release-restore
+
+          if [ -f "$COMPROMISED_KEYS_DB" ]; then
+            if [ "${BOOTSTRAP_REQUESTED:-false}" = "true" ]; then
+              echo "::error::Bootstrap cannot replace existing runner history."
+              exit 1
+            fi
+            # Preserve committed increments from runs whose publication failed.
+            python - <<'PY'
+          import os
+          from pathlib import Path
+          from compromised_keys.release_assets import check_database
+          check_database(Path(os.environ["COMPROMISED_KEYS_DB"]))
+          PY
+          elif gh release view data-latest >/dev/null 2>&1; then
+            if [ "${BOOTSTRAP_REQUESTED:-false}" = "true" ]; then
+              echo "::error::Bootstrap is forbidden after data-latest exists."
+              exit 1
+            fi
+            mkdir -p .release-restore
+            gh release download data-latest \
+              --pattern compromised_keys.db.zst \
+              --pattern db-manifest.json \
+              --pattern SHA256SUMS \
+              --dir .release-restore
+            compromised-keys restore-release \
+              --asset-dir .release-restore \
+              --output "$COMPROMISED_KEYS_DB"
+          else
+            if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || \
+               [ "${BOOTSTRAP_REQUESTED:-false}" != "true" ]; then
+              echo "::error::data-latest does not exist. Dispatch once with bootstrap=true after reviewing INITIAL_DB_PATH."
+              exit 1
+            fi
+            if [ -z "${INITIAL_DB_PATH:-}" ] || [ ! -f "$INITIAL_DB_PATH" ]; then
+              echo "::error::The data-production variable INITIAL_DB_PATH must point to a reviewed database outside the Actions workspace."
+              exit 1
+            fi
+            python - <<'PY'
+          import os
+          from pathlib import Path
+          from compromised_keys.release_assets import create_snapshot
+          source = Path(os.environ["INITIAL_DB_PATH"]).resolve()
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          if source.is_relative_to(workspace):
+              raise SystemExit("INITIAL_DB_PATH must be outside the Actions workspace")
+          create_snapshot(source, Path(os.environ["COMPROMISED_KEYS_DB"]))
+          PY
+          fi
+
+          compromised-keys doctor
+        timeout-minutes: 45
+
+      - name: Run complete synchronization
+        id: sync
+        env:
+          CT_SERVER_HOST: ${{ secrets.CT_SERVER_HOST }}
+        run: |
+          if [ -z "${CT_SERVER_HOST:-}" ]; then
+            echo "::error::CT_SERVER_HOST secret is not available to this workflow."
+            exit 1
+          fi
+          compromised-keys sync \
+            --crtsh-mode postgres \
+            --crtsh-limit 5000 \
+            --report "$REPORT_DIR/sync_report.json" \
+            > "$REPORT_DIR/sync.log" 2>&1
+        timeout-minutes: 240
+
+      - name: Retain private CRL failure report
+        if: ${{ !cancelled() && (steps.sync.outcome == 'success' || steps.sync.outcome == 'failure') }}
+        run: compromised-keys crl-health --out "$REPORT_DIR/crl_failures.json"
+        timeout-minutes: 10
+
+      - name: Build public statistics
+        run: |
+          compromised-keys analyze-misses > data/latest/misses_report.json
+          compromised-keys stats > data/latest/db_stats.json
+        timeout-minutes: 10
+
+      - name: Prepare and verify release assets
+        run: |
+          set -euo pipefail
+          compromised-keys prepare-release \
+            --db "$COMPROMISED_KEYS_DB" \
+            --export-dir data/latest \
+            --output-dir dist/data-release \
+            --sync-report "$REPORT_DIR/sync_report.json"
+          rm -f "$RUNNER_TEMP/compromised-keys-release-verify.db"
+          compromised-keys restore-release \
+            --asset-dir dist/data-release \
+            --output "$RUNNER_TEMP/compromised-keys-release-verify.db"
+        timeout-minutes: 45
+
+      - name: Read release version
+        id: version
+        run: |
+          TAG=$(python -c "import json; print(json.load(open('data/latest/metadata.json'))['version'])")
+          case "$TAG" in
+            data-v*) ;;
+            *) echo "::error::Invalid data release tag: $TAG"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          {
+            echo "Automated compromised-key data release: $RELEASE_TAG"
+            echo
+            echo "Source commit: $GITHUB_SHA"
+            echo "Verify every downloaded asset against SHA256SUMS before use."
+            echo
+            echo '```json'
+            cat data/latest/db_stats.json
+            echo '```'
+          } > dist/data-release-notes.md
+
+      - name: Create immutable data release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Immutable release $RELEASE_TAG already exists and will not be overwritten."
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            dist/data-release/* \
+            --target "$GITHUB_SHA" \
+            --latest=false \
+            --title "Compromised Keys Data $RELEASE_TAG" \
+            --notes-file dist/data-release-notes.md
+        timeout-minutes: 30
+
+      - name: Refresh data-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view data-latest >/dev/null 2>&1; then
+            gh release upload data-latest dist/data-release/* --clobber
+            gh release edit data-latest \
+              --title "Latest Compromised Keys Data" \
+              --notes "Rolling mirror of $RELEASE_TAG. Verify assets with SHA256SUMS."
+          else
+            gh release create data-latest \
+              dist/data-release/* \
+              --target "$GITHUB_SHA" \
+              --latest=false \
+              --title "Latest Compromised Keys Data" \
+              --notes "Rolling mirror of $RELEASE_TAG. Verify assets with SHA256SUMS."
+          fi
+        timeout-minutes: 30
+
+      - name: Write job summary
+        if: always()
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          {
+            echo "## Daily data sync"
+            echo
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Data version: \`${RELEASE_TAG:-not-published}\`"
+            if [ -f "${REPORT_DIR:-}/sync_report.json" ]; then
+              python - <<'PY'
+          import json
+          import os
+          report = json.load(open(os.path.join(os.environ["REPORT_DIR"], "sync_report.json"), encoding="utf-8"))
+          print(f"- Release gate: `{report.get('release', {}).get('status', 'unknown')}`")
+          PY
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

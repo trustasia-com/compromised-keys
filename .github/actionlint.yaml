@@ -1,0 +1,6 @@
+self-hosted-runner:
+  labels:
+    - compromised-keys-sync
+
+config-variables:
+  - INITIAL_DB_PATH

@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=83.0", "wheel>=0.45.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "compromised-keys"
+version = "1.0.0"
+description = "WebPKI compromised-key data collection and screening toolkit"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE.md", "DATA_NOTICE.md"]
+requires-python = ">=3.10"
+authors = [
+    { name = "Compromised Keys Contributors" },
+]
+keywords = ["certificate", "pki", "security", "crl", "ct", "bloom-filter", "webpki"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "filelock>=3.32.5",
+    "cryptography>=50.0.1",
+    "requests>=2.33.0",
+    "aiohttp>=3.14.3",
+    "pybloom_live>=4.0.0",
+]
+
+[project.optional-dependencies]
+postgres = [
+    "psycopg2-binary>=2.9.12",
+]
+release = [
+    "zstandard>=0.25.0",
+]
+dev = [
+    "build>=1.2.0",
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4.0",
+    "pre-commit>=3.0",
+    "twine>=5.0.0",
+    "pip-audit>=2.9.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/trustasia-com/compromised-keys"
+Documentation = "https://github.com/trustasia-com/compromised-keys#readme"
+Repository = "https://github.com/trustasia-com/compromised-keys"
+Issues = "https://github.com/trustasia-com/compromised-keys/issues"
+Changelog = "https://github.com/trustasia-com/compromised-keys/blob/main/CHANGELOG.md"
+Security = "https://github.com/trustasia-com/compromised-keys/security/policy"
+"Data Terms" = "https://github.com/trustasia-com/compromised-keys/blob/main/DATA_NOTICE.md"
+
+[project.scripts]
+compromised-keys = "compromised_keys.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = ["build/", "dist/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501", "UP006", "UP035", "UP045"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["compromised_keys"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,22 @@
+name: Certificate Submission
+description: Submit a certificate for compromised key validation
+title: "[Cert] Certificate Submission"
+labels: ["cert-submission"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Submit a public certificate matching a tracked key-compromise revocation.
+        Never submit private keys or secrets. Validation does not change production data.
+
+  - type: textarea
+    id: certificate-pem
+    attributes:
+      label: Certificate PEM
+      description: Paste the full PEM-encoded certificate (including BEGIN/END markers).
+      placeholder: |
+        -----BEGIN CERTIFICATE-----
+        MIIBkTCB+wIJAL...
+        -----END CERTIFICATE-----
+    validations:
+      required: true

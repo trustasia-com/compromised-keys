@@ -1,0 +1,21 @@
+services:
+  compromised-keys:
+    build: .
+    command: ["sync"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    volumes:
+      - compromised-keys-data:/data
+      - compromised-keys-cache:/cache
+    environment:
+      CT_SERVER_HOST: ${CT_SERVER_HOST:-}
+      CRTSH_MODE: ${CRTSH_MODE:-postgres}
+    restart: "no"
+
+volumes:
+  compromised-keys-data:
+  compromised-keys-cache:

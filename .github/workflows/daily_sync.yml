@@ -41,11 +41,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Set up Python 3.14
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
-          cache: pip
+      - name: Select runner Python 3.14
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="$(command -v python3.14 || true)"
+          if [ -z "$PYTHON_BIN" ]; then
+            echo "::error::Python 3.14 is required on the self-hosted runner."
+            exit 1
+          fi
+          "$PYTHON_BIN" --version
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
 
       - name: Check runner prerequisites
         run: |
@@ -69,7 +74,7 @@ jobs:
 
       - name: Install package
         run: |
-          python -m venv "$RUNNER_TEMP/compromised-keys-venv"
+          "$PYTHON_BIN" -m venv "$RUNNER_TEMP/compromised-keys-venv"
           source "$RUNNER_TEMP/compromised-keys-venv/bin/activate"
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install ".[postgres,release]"

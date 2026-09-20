@@ -3,7 +3,8 @@
 ## CSV
 
 `compromised_keys.csv` contains one row per accepted certificate record with a public
-key. Important fields are:
+key. Releases distribute it as `compromised_keys.csv.gz`; local exports remain uncompressed.
+Important fields are:
 
 | Field | Encoding and meaning |
 |:--|:--|
@@ -35,3 +36,5 @@ A hit must be confirmed against the CSV or SQLite database from the same release
 filenames, and SHA-256 digests. `db-manifest.json` adds uncompressed/compressed database
 digests, sizes, schema columns, table counts, SQLite integrity result, and sync report.
 `SHA256SUMS` covers every distributed release asset.
+For published CSV, `files.csv` describes the gzip asset; `files.csv.uncompressed`
+describes the original CSV, including its filename, digest, and size.

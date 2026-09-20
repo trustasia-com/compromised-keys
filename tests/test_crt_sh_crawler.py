@@ -411,3 +411,105 @@ async def test_http_malformed_candidates_are_not_misses(monkeypatch, body):
     )
     assert result.outcome == LookupOutcome.MALFORMED_RESPONSE
     assert failed == 1
+
+
+async def test_postgres_budget_preserves_completed_batches(monkeypatch, data_manager):
+    from types import SimpleNamespace
+
+    from psycopg2 import extensions
+
+    import compromised_keys.crt_sh_crawler as crawler
+
+    records = [
+        {"serial_number": sn, "issuer": "CN=CA", "revocation_date": None}
+        for sn in ("01", "02", "03")
+    ]
+    data_manager.save_revoked_certs(records)
+    clock = [0.0]
+    monkeypatch.setattr(crawler.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(crawler, "_query_budget", lambda: 10)
+    closed = []
+    connection = SimpleNamespace(
+        cursor=lambda: None, close=lambda: closed.append(True), poll=lambda: extensions.POLL_READ
+    )
+    provider = CrtShPostgresProvider(pg_batch_size=1)
+    monkeypatch.setattr(provider, "_connect", lambda: connection)
+
+    def wait_for_socket(_read, _write, _errors, timeout):
+        clock[0] += timeout
+        return [], [], []
+
+    monkeypatch.setattr(crawler.select, "select", wait_for_socket)
+
+    def query(_cursor, serials):
+        if serials == ["01"]:
+            clock[0] = 7
+            return {}
+        assert serials == ["02"]
+        provider._wait(connection)
+        pytest.fail("Budget expiry must interrupt the pending query")
+
+    monkeypatch.setattr(provider, "_batch_query_serials", query)
+    result = await provider.supplement_records(records, data_manager)
+    assert result.budget_exhausted
+    assert result.persisted_counts == {"not_found": 1}
+    assert clock[0] == 10
+    assert closed
+    assert data_manager.get_lookup_state("02", "CN=CA", provider.source) is None
+    assert data_manager.get_lookup_state("03", "CN=CA", provider.source) is None
+
+
+async def test_http_budget_keeps_completed_results(monkeypatch, data_manager):
+    import asyncio
+
+    import compromised_keys.crt_sh_crawler as crawler
+
+    records = [
+        {"serial_number": sn, "issuer": "CN=CA", "revocation_date": None} for sn in ("01", "02")
+    ]
+    data_manager.save_revoked_certs(records)
+    provider = CrtShHttpProvider(concurrency=1)
+    monkeypatch.setattr(crawler, "_query_budget", lambda: 0.05)
+    cancelled = []
+
+    async def process(_session, record, _semaphore, _circuit):
+        if record["serial_number"] == "02":
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+        return LookupRecordResult(record, LookupOutcome.NOT_FOUND), 1, 0
+
+    monkeypatch.setattr(provider, "_process_one", process)
+    result = await provider.supplement_records(records, data_manager)
+    assert result.budget_exhausted
+    assert result.persisted_counts == {"not_found": 1}
+    assert cancelled
+    assert data_manager.get_lookup_state("02", "CN=CA", provider.source) is None
+
+
+def test_crtsh_selects_newest_remaining_keys(data_manager):
+    import sqlite3
+
+    records = [
+        {"serial_number": "01", "issuer": "CN=CA", "revocation_date": "2026-09-01"},
+        {"serial_number": "02", "issuer": "CN=CA", "revocation_date": "2026-09-02"},
+        {"serial_number": "03", "issuer": "CN=CA", "revocation_date": "2026-09-03"},
+        {"serial_number": "04", "issuer": "CN=CA", "revocation_date": None},
+    ]
+    data_manager.save_revoked_certs(records)
+    data_manager.record_lookup_results(
+        "operator_ct",
+        [
+            LookupRecordResult(
+                records[2], LookupOutcome.FOUND, info={"publickey": "aa", "key_hash": "key"}
+            )
+        ],
+    )
+    data_manager.record_lookup_results(
+        "crtsh_postgres", [LookupRecordResult(records[1], LookupOutcome.NOT_FOUND)]
+    )
+    with sqlite3.connect(data_manager.db_path) as conn:
+        conn.execute("UPDATE lookup_state SET next_retry_after=NULL WHERE source='crtsh_postgres'")
+    supplementer = CrtShSupplementer(mode="postgres", db_path=data_manager.db_path)
+    assert [r["serial_number"] for r in supplementer.get_pending_records(4)] == ["02", "01", "04"]

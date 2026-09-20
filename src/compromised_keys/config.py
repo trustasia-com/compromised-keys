@@ -41,6 +41,7 @@ CT_TIMEOUT_SECONDS = int(os.environ.get("CT_TIMEOUT_SECONDS", "600"))
 
 # crt.sh PostgreSQL batch size (serials per SQL query)
 CRTSH_PG_BATCH_SIZE = int(os.environ.get("CRTSH_PG_BATCH_SIZE", "20"))
+CRTSH_MAX_SECONDS = int(os.environ.get("CRTSH_MAX_SECONDS", "3600"))
 
 # crt.sh HTTP crawler settings
 CRTSH_HTTP_CONCURRENCY = int(os.environ.get("CRTSH_HTTP_CONCURRENCY", "5"))

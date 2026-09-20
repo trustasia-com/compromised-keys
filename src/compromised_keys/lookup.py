@@ -40,6 +40,7 @@ class LookupProviderResult:
     circuit_open: bool = False
     circuit_reason: str = ""
     persisted_counts: Optional[Dict[str, int]] = None
+    budget_exhausted: bool = False
 
 
 class SourceCircuitBreaker:

@@ -188,6 +188,7 @@ details. Optional-source degradation does not suppress other sources. See
 | `CCADB_CACHE_TTL_HOURS` | `24` | Reuse the normalized local API snapshot for this many hours. |
 | `CRTSH_PG_DSN` | `postgresql://guest@crt.sh:5432/certwatch` | Public read-only crt.sh database. |
 | `CRTSH_MODE` | `postgres` | `postgres` or rate-limited `http`. |
+| `CRTSH_MAX_SECONDS` | `3600` | Per-run crt.sh query budget, from 1 to 3600 seconds. |
 | `CT_SERVER_HOST` | empty | Optional compatible CT Provider base or `/search` URL. |
 | `CT_BATCH_SIZE` | `1000` | CT serials per request, capped at 1,000. |
 | `CT_CONCURRENCY` | `5` | Maximum concurrent CT requests. |
@@ -200,12 +201,15 @@ details. Optional-source degradation does not suppress other sources. See
 Each immutable `data-vYYYY.MM.DD.HHMM` release and the rolling `data-latest` alias contain:
 
 - `compromised_keys.db.zst`
-- `compromised_keys.csv`
+- `compromised_keys.csv.gz`
 - `compromised_keys.bf`
 - `metadata.json`
 - `db-manifest.json`
 - `SHA256SUMS`
-- CRL health, missing-record, and database statistics reports
+- Missing-record and database statistics reports
+
+After verifying `SHA256SUMS`, decompress the CSV with `gzip -dk compromised_keys.csv.gz`.
+Release metadata includes SHA-256 digests for both the compressed asset and original CSV.
 
 Restore a downloaded release with built-in checksum and SQLite integrity validation:
 

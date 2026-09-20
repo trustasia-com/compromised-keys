@@ -1,5 +1,6 @@
 """Build and verify reproducible data-release assets."""
 
+import gzip
 import hashlib
 import json
 import os
@@ -418,7 +419,34 @@ def prepare_release(
         compress_zstd(snapshot, compressed)
 
         for filename in REQUIRED_EXPORTS:
-            shutil.copy2(export_dir / filename, temporary / filename)
+            if filename != "compromised_keys.csv":
+                shutil.copy2(export_dir / filename, temporary / filename)
+
+        csv_source = export_dir / "compromised_keys.csv"
+        csv_asset = temporary / "compromised_keys.csv.gz"
+        with (
+            csv_source.open("rb") as source,
+            csv_asset.open("wb") as target,
+            gzip.GzipFile(filename="", mode="wb", fileobj=target, mtime=0) as compressor,
+        ):
+            shutil.copyfileobj(source, compressor, length=1024 * 1024)
+        restored_digest = hashlib.sha256()
+        with gzip.open(csv_asset, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                restored_digest.update(chunk)
+        if restored_digest.hexdigest() != metadata["files"]["csv"]["sha256"]:
+            raise ReleaseAssetError("Compressed CSV does not match export")
+        metadata["files"]["csv"] = {
+            "filename": csv_asset.name,
+            "compression": "gzip",
+            "sha256": sha256_file(csv_asset),
+            "size_bytes": csv_asset.stat().st_size,
+            "uncompressed": {
+                **metadata["files"]["csv"],
+                "size_bytes": csv_source.stat().st_size,
+            },
+        }
+        _write_json(temporary / "metadata.json", metadata)
 
         manifest = {
             "schema_version": f"{SCHEMA_VERSION}.0",

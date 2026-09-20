@@ -172,6 +172,7 @@ CT_SERVER_HOST=https://ct.example.com compromised-keys ct-sync --full-history
 | `CCADB_CACHE_TTL_HOURS` | `24` | 在该时长内复用本地规范化 API 快照。 |
 | `CRTSH_PG_DSN` | `postgresql://guest@crt.sh:5432/certwatch` | 公开只读 crt.sh 数据库。 |
 | `CRTSH_MODE` | `postgres` | `postgres` 或受限的 `http`。 |
+| `CRTSH_MAX_SECONDS` | `3600` | 每轮 crt.sh 查询时间预算，允许 1–3600 秒。 |
 | `CT_SERVER_HOST` | 空 | 可选 CT Provider 基础地址或 `/search` 地址。 |
 | `CT_BATCH_SIZE` | `1000` | 每次 CT 请求的序列号数量，上限 1000。 |
 | `CT_CONCURRENCY` | `5` | CT 请求最大并发数。 |
@@ -184,12 +185,15 @@ CT_SERVER_HOST=https://ct.example.com compromised-keys ct-sync --full-history
 每个不可变 `data-vYYYY.MM.DD.HHMM` 版本和滚动别名 `data-latest` 均包含：
 
 - `compromised_keys.db.zst`
-- `compromised_keys.csv`
+- `compromised_keys.csv.gz`
 - `compromised_keys.bf`
 - `metadata.json`
 - `db-manifest.json`
 - `SHA256SUMS`
-- CRL 健康、缺失记录和数据库统计报告
+- 缺失记录和数据库统计报告
+
+CSV 使用 gzip 压缩。校验 `SHA256SUMS` 后使用 `gzip -dk compromised_keys.csv.gz`
+解压；发布元数据同时记录压缩文件与原始 CSV 的 SHA-256。
 
 下载后使用内置 SHA256 和 SQLite 完整性校验恢复：
 

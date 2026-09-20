@@ -2,6 +2,8 @@ import asyncio
 import contextlib
 import logging
 import math
+import select
+import time
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
@@ -27,6 +29,16 @@ from compromised_keys.lookup import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class QueryBudgetExceededError(TimeoutError):
+    """The optional lookup stage must yield to export and publication."""
+
+
+def _query_budget() -> int:
+    if not 0 < config.CRTSH_MAX_SECONDS <= 3600:
+        raise ValueError("CRTSH_MAX_SECONDS must be between 1 and 3600")
+    return config.CRTSH_MAX_SECONDS
 
 
 def _build_cert_info(cert_obj) -> Dict:
@@ -71,36 +83,73 @@ class CrtShPostgresProvider:
     def __init__(self, dsn: str = "", pg_batch_size: int = 0):
         self.dsn = dsn or config.CRTSH_PG_DSN
         self.pg_batch_size = pg_batch_size or config.CRTSH_PG_BATCH_SIZE
+        self._deadline = float("inf")
+
+    def _remaining(self) -> float:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise QueryBudgetExceededError()
+        return remaining
+
+    def _wait(self, connection, timeout: float = 60) -> None:
+        from psycopg2 import OperationalError, extensions
+
+        operation_deadline = time.monotonic() + timeout
+        while True:
+            remaining = min(self._remaining(), operation_deadline - time.monotonic())
+            if remaining <= 0:
+                raise OperationalError("crt.sh operation timed out")
+            state = connection.poll()
+            if state == extensions.POLL_OK:
+                return
+            if state not in (extensions.POLL_READ, extensions.POLL_WRITE):
+                raise OperationalError("Unexpected PostgreSQL poll state")
+            select.select(
+                [connection] if state == extensions.POLL_READ else [],
+                [connection] if state == extensions.POLL_WRITE else [],
+                [],
+                remaining,
+            )
 
     def _connect(self):
-        import time
-
         import psycopg2
 
         last_error = None
         for attempt in range(3):
+            self._remaining()
+            conn = None
             try:
                 conn = psycopg2.connect(
                     self.dsn,
+                    async_=True,
                     connect_timeout=30,
                     keepalives=1,
                     keepalives_idle=30,
                     keepalives_interval=5,
                     keepalives_count=3,
                 )
-                conn.set_session(readonly=True, autocommit=True)
+                self._wait(conn, 30)
                 with conn.cursor() as cursor:
+                    cursor.execute("SET default_transaction_read_only = on")
+                    self._wait(conn)
                     cursor.execute("SET statement_timeout = 60000")
+                    self._wait(conn)
                 return conn
+            except QueryBudgetExceededError:
+                if conn is not None:
+                    conn.close()
+                raise
             except psycopg2.Error as error:
+                if conn is not None:
+                    conn.close()
                 last_error = error
                 logger.warning("[PG] Connection attempt %d/3 failed: %s", attempt + 1, error)
                 if attempt < 2:
-                    time.sleep(10)
+                    time.sleep(min(10, self._remaining()))
         raise RuntimeError("Failed to connect to crt.sh PostgreSQL") from last_error
 
-    @staticmethod
-    def _batch_query_serials(cursor, serial_hex_list: List[str]) -> Dict:
+    def _batch_query_serials(self, cursor, serial_hex_list: List[str]) -> Dict:
+        self._remaining()
         padded = []
         serial_map = {}
         for serial in serial_hex_list:
@@ -119,6 +168,7 @@ class CrtShPostgresProvider:
             """,
             (padded,),
         )
+        self._wait(cursor.connection)
         results = {}
         for serial_hex, cert_id, cert_der in cursor:
             if serial_hex and cert_der:
@@ -178,6 +228,7 @@ class CrtShPostgresProvider:
         data_manager: Optional[DataManager] = None,
         batch_size: int = 50,
     ) -> LookupProviderResult:
+        self._deadline = time.monotonic() + _query_budget()
         try:
             import psycopg2
         except ImportError as error:
@@ -191,6 +242,8 @@ class CrtShPostgresProvider:
         try:
             connection = self._connect()
             cursor = connection.cursor()
+        except QueryBudgetExceededError:
+            return LookupProviderResult(budget_exhausted=True)
         except Exception as error:
             return LookupProviderResult(
                 records=_error_results(
@@ -202,12 +255,14 @@ class CrtShPostgresProvider:
         results = []
         requests_total = 0
         requests_failed = 0
+        budget_exhausted = False
         circuit = SourceCircuitBreaker()
         pg_batch_size = max(1, min(self.pg_batch_size, batch_size))
         persisted_counts = {} if data_manager is not None else None
         total_batches = math.ceil(len(records) / pg_batch_size)
         try:
             for batch_number, offset in enumerate(range(0, len(records), pg_batch_size), start=1):
+                self._remaining()
                 current = records[offset : offset + pg_batch_size]
                 if batch_number == 1 or batch_number % 10 == 0:
                     logger.info(
@@ -222,6 +277,7 @@ class CrtShPostgresProvider:
                 pg_results = None
                 last_error = None
                 for attempt in range(3):
+                    self._remaining()
                     requests_total += 1
                     try:
                         pg_results = self._batch_query_serials(
@@ -240,6 +296,8 @@ class CrtShPostgresProvider:
                         try:
                             connection = self._connect()
                             cursor = connection.cursor()
+                        except QueryBudgetExceededError:
+                            raise
                         except Exception as connect_error:
                             last_error = connect_error
                             break
@@ -257,11 +315,9 @@ class CrtShPostgresProvider:
                     for name, count in counts.items():
                         persisted_counts[name] = persisted_counts.get(name, 0) + count
                 results.extend(batch_results)
-            logger.info(
-                "[PG] Completed %d batches for %d records",
-                total_batches,
-                len(records),
-            )
+        except QueryBudgetExceededError:
+            budget_exhausted = True
+            logger.info("[PG] Query time budget exhausted; completed %d records", len(results))
         finally:
             with contextlib.suppress(Exception):
                 connection.close()
@@ -273,6 +329,7 @@ class CrtShPostgresProvider:
             circuit_open=circuit.is_open,
             circuit_reason=circuit.reason,
             persisted_counts=persisted_counts,
+            budget_exhausted=budget_exhausted,
         )
 
 
@@ -437,24 +494,52 @@ class CrtShHttpProvider:
             return LookupProviderResult()
         semaphore = asyncio.Semaphore(self.concurrency)
         circuit = SourceCircuitBreaker()
-        try:
-            async with aiohttp.ClientSession() as session:
-                outcomes = await asyncio.gather(
-                    *[self._process_one(session, record, semaphore, circuit) for record in records]
-                )
-        except Exception as error:
-            return LookupProviderResult(
-                records=_error_results(
-                    records, LookupOutcome.PROVIDER_UNAVAILABLE, error_class=type(error).__name__
-                ),
-                requests_failed=1,
-            )
+        outcomes = []
+        persisted_counts = {} if data_manager is not None else None
+        pending = iter(records)
+        budget_exhausted = False
+
+        async def worker(session):
+            for record in pending:
+                if not await circuit.allow_request():
+                    break
+                try:
+                    outcome = await self._process_one(session, record, semaphore, circuit)
+                except Exception as error:
+                    await circuit.record_failure(LookupOutcome.PROVIDER_UNAVAILABLE)
+                    outcome = (
+                        LookupRecordResult(
+                            record,
+                            LookupOutcome.PROVIDER_UNAVAILABLE,
+                            error_class=type(error).__name__,
+                        ),
+                        0,
+                        1,
+                    )
+                if data_manager is not None:
+                    counts = data_manager.record_lookup_results(self.source, [outcome[0]])
+                    for name, count in counts.items():
+                        persisted_counts[name] = persisted_counts.get(name, 0) + count
+                outcomes.append(outcome)
+
+        async with aiohttp.ClientSession() as session:
+            workers = [asyncio.create_task(worker(session)) for _ in range(self.concurrency)]
+            try:
+                await asyncio.wait_for(asyncio.gather(*workers), timeout=_query_budget())
+            except asyncio.TimeoutError:
+                budget_exhausted = True
+            finally:
+                for task in workers:
+                    task.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
         return LookupProviderResult(
             records=[item[0] for item in outcomes],
             requests_total=sum(item[1] for item in outcomes),
             requests_failed=sum(item[2] for item in outcomes),
             circuit_open=circuit.is_open,
             circuit_reason=circuit.reason,
+            persisted_counts=persisted_counts,
+            budget_exhausted=budget_exhausted,
         )
 
 
@@ -470,7 +555,9 @@ class CrtShSupplementer:
         return self.provider.source
 
     def get_pending_records(self, limit: int = 500) -> List[Dict]:
-        return self.data_manager.get_pending_lookup_records(self.source, limit=limit)
+        return self.data_manager.get_pending_lookup_records(
+            self.source, limit=limit, newest_first=True
+        )
 
     async def run(self, limit: int = 500, export_results: bool = True) -> Dict:
         records = self.get_pending_records(limit)
@@ -486,12 +573,20 @@ class CrtShSupplementer:
             keys = self.data_manager.get_all_compromised_keys()
             self.exporter.export_all(keys)
 
-        status = "degraded" if outcome.requests_failed or outcome.circuit_open else "ok"
+        status = (
+            "degraded"
+            if (outcome.requests_failed or outcome.circuit_open or outcome.budget_exhausted)
+            else "ok"
+        )
         return {
             "status": status,
             "mode": self.mode,
             "source": self.source,
             "submitted": len(outcome.records),
+            "selected": len(records),
+            "deferred": len(records) - len(outcome.records),
+            "budget_exhausted": outcome.budget_exhausted,
+            "time_budget_seconds": _query_budget(),
             "updated": updated,
             "requests_total": outcome.requests_total,
             "requests_failed": outcome.requests_failed,

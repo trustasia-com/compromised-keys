@@ -39,7 +39,7 @@ self-hosted runner and the protected `data-production` Environment. Before the f
 [Internal Runner And Initial Data Bootstrap](runner-and-bootstrap.md). Scheduled runs
 never initialize an empty production database.
 
-Every release contains the compressed database, CSV, Bloom Filter, metadata,
+Every release contains the compressed database, gzip-compressed CSV, Bloom Filter, metadata,
 missing-key and database statistics, manifest, and checksums. Consumers should pin
 immutable tags and verify all assets before use.
 

@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import json
 import sqlite3
@@ -72,6 +73,25 @@ def test_prepare_and_restore_release_round_trip(tmp_path, data_manager, sample_c
     assert (output_dir / "compromised_keys.db.zst").is_file()
     assert (output_dir / "db-manifest.json").is_file()
     assert (output_dir / "SHA256SUMS").is_file()
+    csv_asset = output_dir / "compromised_keys.csv.gz"
+    assert not (output_dir / "compromised_keys.csv").exists()
+    assert (
+        gzip.decompress(csv_asset.read_bytes())
+        == (export_dir / "compromised_keys.csv").read_bytes()
+    )
+    metadata = json.loads((output_dir / "metadata.json").read_text())
+    csv = metadata["files"]["csv"]
+    assert csv["filename"] == csv_asset.name
+    assert csv["sha256"] == hashlib.sha256(csv_asset.read_bytes()).hexdigest()
+    assert (
+        csv["uncompressed"]["sha256"]
+        == hashlib.sha256(gzip.decompress(csv_asset.read_bytes())).hexdigest()
+    )
+    assert (
+        json.loads((export_dir / "metadata.json").read_text())["files"]["csv"]["filename"]
+        == "compromised_keys.csv"
+    )
+    assert csv_asset.name in (output_dir / "SHA256SUMS").read_text()
 
 
 def test_restore_rejects_checksum_mismatch(tmp_path, data_manager):

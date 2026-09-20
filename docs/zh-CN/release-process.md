@@ -20,7 +20,7 @@ CT 或 crt.sh 失败只产生 `degraded`。`prepare-release` 强制要求同步�
 恢复验证快照；发布不可变 `data-vYYYY.MM.DD.HHMM`；最后更新 `data-latest`。生产使用方
 应固定不可变版本，并验证 `SHA256SUMS` 和数据库完整性。
 
-对外资产包括压缩数据库、CSV、Bloom Filter、元数据、缺失公钥及数据库统计、清单和校验值。
+对外资产包括压缩数据库、gzip 压缩 CSV、Bloom Filter、元数据、缺失公钥及数据库统计、清单和校验值。
 CRL 失败报告及同步日志仅保留在 runner，不上传为 Release 资产或 Actions artifact。
 公开 SQLite 快照会清除 CRL 失败状态码、计数、错误详情和失败时间，保留下载哈希与解析检查点，
 原始数据库不受影响。从公开快照恢复后，CRL 失败计数重新累计；诊断历史从本地报告查阅。

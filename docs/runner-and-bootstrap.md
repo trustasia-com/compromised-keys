@@ -26,8 +26,9 @@ It must never run untrusted pull-request code or share a runner with general CI.
    workflow permission read-only; the data job requests `contents: write` explicitly.
 
 The runner needs outbound HTTPS for GitHub, CCADB, CT, and CRL endpoints, and outbound
-TCP 5432 for crt.sh PostgreSQL. Install GitHub CLI and provide at least 5 GiB of free
-temporary disk. Python is installed by the pinned `setup-python` action.
+TCP 5432 for crt.sh PostgreSQL. Preinstall GitHub CLI and Python 3.14 (including pip
+and venv), available as `python3.14`. Provide at least 5 GiB of free temporary disk
+and a reliable connection to `uploads.github.com:443` for publishing assets.
 
 ## First data release
 
@@ -63,13 +64,35 @@ Never remove the operational database to retry a failed run; back it up independ
 
 ## Operations and recovery
 
+Verified bundles persist at `$RUNNER_TOOL_CACHE/compromised-keys-releases/<version>/`.
+After upload failure, dispatch **Daily Data Sync** with `publish_tag` set to the version
+in the failed job summary and `bootstrap=false`:
+
+```bash
+gh workflow run daily_sync.yml --ref main \
+  -f publish_tag=data-v2026.09.20.1200 -f bootstrap=false
+```
+
+This mode verifies and publishes the saved bundle without reading the operational
+database or repeating sync, export, or compression. **Re-run jobs** retains the original
+inputs and will repeat sync if that was the original mode. Missing or corrupt bundles
+fail immediately; only versions retained by this workflow support publication retries.
+Keep this directory on persistent storage. Successful bundles receive a `published`
+marker and can be removed under your retention policy; retain and back up unpublished bundles.
+
+Each file gets up to four upload attempts, each capped at ten minutes. Remote digests
+are checked before retrying, so a completed upload is reused even after a lost response.
+Fixed versions stay in draft until all assets verify; published versions are never
+overwritten. The rolling alias is updated last, with checksums uploaded last. Its update
+is not atomic, so consumers must verify `SHA256SUMS`. Retrying an older version does not
+replace a newer `data-latest`.
+
 - The schedule `0 18 * * *` is 18:00 UTC, or 02:00 Asia/Shanghai on the following
   calendar day.
 - The workflow does not use `pull_request_target` and the dedicated runner must not
   be assigned to public pull requests.
-- Immutable release names are never overwritten. If publishing the rolling alias
-  fails, re-run after confirming the immutable release and assets are correct. A new
-  sync produces a new immutable version.
+- If updating the rolling alias fails, retry with the same `publish_tag`; the published
+  fixed version is verified and its uploads are skipped.
 - Remove `INITIAL_DB_PATH` after the first successful release or leave it pointing to
   read-only controlled storage; the workflow cannot use it once `data-latest` exists.
 - Rotate `CT_SERVER_HOST` at its configured secret scope without editing source.

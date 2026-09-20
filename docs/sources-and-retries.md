@@ -1,5 +1,14 @@
 # Sources, Outcomes, And Retries
 
+Full sync queries the operator CT first, then crt.sh for records still missing keys.
+crt.sh honors its own retry times and exact exclusions, selecting newest revocations
+first and missing or invalid dates last. It stops at the record limit (5000 by default
+for sync) or `CRTSH_MAX_SECONDS` (3600 by default, at most 60 minutes).
+Connections, reconnections, queries, and retry waits share this budget. Completed
+batches are committed; unfinished queries are closed without recording misses or
+delaying those records. Reports expose `budget_exhausted` and `deferred` and mark
+the source `degraded`, allowing export and publication to continue.
+
 ## Record Outcomes
 
 Each completed source attempt records an outcome for its records.

@@ -298,6 +298,7 @@ class DataManager:
         require_aki: bool = False,
         limit: Optional[int] = None,
         ignore_retry: bool = False,
+        newest_first: bool = False,
     ) -> List[Dict]:
         """Return missing-key records currently eligible for one lookup source."""
         now = _utcnow_iso()
@@ -324,6 +325,12 @@ class DataManager:
             limit_sql = " LIMIT ?"
             params.append(limit)
 
+        order = (
+            "julianday(r.revocation_date) DESC, r.serial_number, r.issuer"
+            if newest_first
+            else "CASE WHEN r.revocation_date > datetime('now', '-30 days') THEN 0 ELSE 1 END, "
+            "COALESCE(s.consecutive_misses, 0) ASC, r.revocation_date DESC"
+        )
         query = f"""
             SELECT r.serial_number, r.issuer, r.authority_key_identifier,
                    r.revocation_date, COALESCE(s.consecutive_misses, 0) AS source_misses
@@ -333,10 +340,7 @@ class DataManager:
              AND s.issuer = r.issuer
              AND s.source = ?
             WHERE {" AND ".join(clauses)}
-            ORDER BY
-              CASE WHEN r.revocation_date > datetime('now', '-30 days') THEN 0 ELSE 1 END,
-              COALESCE(s.consecutive_misses, 0) ASC,
-              r.revocation_date DESC
+            ORDER BY {order}
             {limit_sql}
         """
         with sqlite3.connect(self.db_path) as conn:

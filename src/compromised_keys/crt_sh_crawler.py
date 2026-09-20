@@ -503,7 +503,19 @@ class CrtShHttpProvider:
             for record in pending:
                 if not await circuit.allow_request():
                     break
-                outcome = await self._process_one(session, record, semaphore, circuit)
+                try:
+                    outcome = await self._process_one(session, record, semaphore, circuit)
+                except Exception as error:
+                    await circuit.record_failure(LookupOutcome.PROVIDER_UNAVAILABLE)
+                    outcome = (
+                        LookupRecordResult(
+                            record,
+                            LookupOutcome.PROVIDER_UNAVAILABLE,
+                            error_class=type(error).__name__,
+                        ),
+                        0,
+                        1,
+                    )
                 if data_manager is not None:
                     counts = data_manager.record_lookup_results(self.source, [outcome[0]])
                     for name, count in counts.items():

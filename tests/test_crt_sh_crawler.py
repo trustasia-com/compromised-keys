@@ -513,3 +513,25 @@ def test_crtsh_selects_newest_remaining_keys(data_manager):
         conn.execute("UPDATE lookup_state SET next_retry_after=NULL WHERE source='crtsh_postgres'")
     supplementer = CrtShSupplementer(mode="postgres", db_path=data_manager.db_path)
     assert [r["serial_number"] for r in supplementer.get_pending_records(4)] == ["02", "01", "04"]
+
+
+async def test_http_record_exception_preserves_progress(monkeypatch, data_manager):
+    records = [
+        {"serial_number": sn, "issuer": "CN=CA", "revocation_date": None}
+        for sn in ("01", "02", "03")
+    ]
+    data_manager.save_revoked_certs(records)
+    provider = CrtShHttpProvider(concurrency=1)
+
+    async def process(_session, record, _semaphore, _circuit):
+        if record["serial_number"] == "02":
+            raise ValueError("Unparseable certificate extension")
+        return LookupRecordResult(record, LookupOutcome.NOT_FOUND), 1, 0
+
+    monkeypatch.setattr(provider, "_process_one", process)
+    result = await provider.supplement_records(records, data_manager)
+    assert result.persisted_counts == {"not_found": 2, "provider_unavailable": 1}
+    assert result.requests_failed == 1
+    state = data_manager.get_lookup_state("02", "CN=CA", provider.source)
+    assert state["consecutive_misses"] == 0
+    assert state["next_retry_after"] is None

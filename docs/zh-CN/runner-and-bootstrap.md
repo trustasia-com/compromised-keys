@@ -55,21 +55,22 @@ runner 账号可访问。每次任务校验并继续使用该库，保留失败�
 ## 运维和恢复
 
 发布前校验过的文件保存在 `$RUNNER_TOOL_CACHE/compromised-keys-releases/<版本>/`。
-上传失败后，在 **Daily Data Sync → Run workflow** 中设置 `publish_tag` 为失败任务摘要中的
-版本（例如 `data-v2026.09.20.1200`），保持 `bootstrap=false`。也可执行：
+上传失败后，在 **Publish Retained Data Release → Run workflow** 中设置 `publish_tag` 为失败
+任务摘要中的版本（例如 `data-v2026.09.20.1200`），也可执行：
 
 ```bash
-gh workflow run daily_sync.yml --ref main \
-  -f publish_tag=data-v2026.09.20.1200 -f bootstrap=false
+gh workflow run publish_release.yml --ref main \
+  -f publish_tag=data-v2026.09.20.1200
 ```
 
-该模式仅校验并发布持久目录中的文件，不读取运行数据库，不重新同步、导出或压缩。
+该工作流仅校验并发布持久目录中的文件，不读取运行数据库，不重新同步、导出或压缩。
+旧的 **Daily Data Sync** `publish_tag` 参数仍保留用于兼容，推荐使用独立工作流。
 不要用普通的 **Re-run jobs** 代替该模式：它会沿用原始参数，原先是完整同步就仍然完整同步。
 版本目录不存在或摘要不一致时直接报错。只有采用此流程生成的版本才可通过此入口重试。
 专用 runner 必须保留这个目录；上传成功后会生成 `published` 标记，可按内部保留策略清理
 已发布目录，尚未发布的目录应保留并备份。
 
-每个文件最多上传 4 次，每次上传最多等待 10 分钟；重试前核对服务端摘要，已完整上传的文件
+每个文件最多上传 6 次，每次上传最多等待 15 分钟；重试前核对服务端摘要，已完整上传的文件
 不会重复传输。不可变版本先保留为草稿，全部资产校验通过后才公开。已公开版本只允许校验，
 不允许覆盖。`data-latest` 最后更新、校验文件最后上传；更新不是原子操作，消费方必须校验
 `SHA256SUMS`。重试旧版本不会覆盖已指向更新版本的 `data-latest`。

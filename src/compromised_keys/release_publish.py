@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -98,7 +99,11 @@ class GitHubPublisher:
             except subprocess.TimeoutExpired:
                 error = "GitHub command timed out"
             if attempt + 1 < attempts:
-                print(f"GitHub request failed; retry {attempt + 2}/{attempts}", flush=True)
+                print(
+                    f"GitHub request failed: {error or 'no error output'}; "
+                    f"retry {attempt + 2}/{attempts}",
+                    flush=True,
+                )
                 time.sleep(min(5 * 2**attempt, 30))
         raise ReleaseAssetError(error)
 
@@ -175,6 +180,13 @@ class GitHubPublisher:
     def publish(self, tag, commit, assets, checksums, notes):
         release = self.ensure_release(tag, commit, notes)
         mutable = tag == "data-latest" or release["draft"]
+        try:
+            upload_attempts = int(os.environ.get("RELEASE_UPLOAD_ATTEMPTS", "4"))
+            upload_timeout = int(os.environ.get("RELEASE_UPLOAD_TIMEOUT_SECONDS", "600"))
+        except ValueError as error:
+            raise ReleaseAssetError("Release upload retry settings must be integers") from error
+        if upload_attempts < 1 or upload_timeout < 1:
+            raise ReleaseAssetError("Release upload retry settings must be positive")
         expected = set(checksums)
         remote_names = {a["name"] for a in release["assets"]}
         obsolete = remote_names - expected
@@ -183,7 +195,7 @@ class GitHubPublisher:
         # Publish checksums last so rolling-alias readers can detect mixed versions.
         for name in sorted(expected, key=lambda name: (name == CHECKSUMS_FILENAME, name)):
             path = assets / name
-            for attempt in range(5):
+            for attempt in range(upload_attempts + 1):
                 release = self.release(tag)
                 if release is None:
                     raise ReleaseAssetError("Release disappeared during upload")
@@ -193,9 +205,14 @@ class GitHubPublisher:
                     break
                 if not mutable or (tag != "data-latest" and not release["draft"]):
                     raise ReleaseAssetError(f"Published version differs: {tag}/{name}")
-                if attempt == 4:
-                    raise ReleaseAssetError(f"Upload failed after 4 attempts: {tag}/{name}")
-                print(f"Uploading {tag}/{name}, attempt {attempt + 1}/4", flush=True)
+                if attempt == upload_attempts:
+                    raise ReleaseAssetError(
+                        f"Upload failed after {upload_attempts} attempts: {tag}/{name}"
+                    )
+                print(
+                    f"Uploading {tag}/{name}, attempt {attempt + 1}/{upload_attempts}",
+                    flush=True,
+                )
                 try:
                     self._gh(
                         "release",
@@ -206,10 +223,11 @@ class GitHubPublisher:
                         self.repository,
                         "--clobber",
                         attempts=1,
-                        timeout=600,
+                        timeout=upload_timeout,
                     )
-                except ReleaseAssetError:
+                except ReleaseAssetError as error:
                     # An EOF can arrive after GitHub has stored the asset. Verify before retrying.
+                    print(f"Upload attempt failed: {error}", flush=True)
                     time.sleep(min(5 * 2**attempt, 30))
         for name in obsolete:
             self._gh("release", "delete-asset", tag, name, "--repo", self.repository, "--yes")

@@ -1,0 +1,99 @@
+name: Publish Retained Data Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_tag:
+        description: Retained data-vYYYY.MM.DD.HHMM bundle to publish or resume
+        required: true
+        type: string
+
+concurrency:
+  group: daily-data-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish retained data release
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, compromised-keys-sync]
+    environment: data-production
+    timeout-minutes: 240
+    permissions:
+      contents: write
+    env:
+      PUBLISH_TAG: ${{ inputs.publish_tag }}
+      PYTHONUNBUFFERED: "1"
+      RELEASE_UPLOAD_ATTEMPTS: "6"
+      RELEASE_UPLOAD_TIMEOUT_SECONDS: "900"
+
+    steps:
+      - name: Checkout trusted source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Select runner Python 3.14
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="$(command -v python3.14 || true)"
+          if [ -z "$PYTHON_BIN" ]; then
+            echo "::error::Python 3.14 is required on the self-hosted runner."
+            exit 1
+          fi
+          "$PYTHON_BIN" --version
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+
+      - name: Check retained publication bundle
+        run: |
+          set -euo pipefail
+          if [[ ! "$PUBLISH_TAG" =~ ^data-v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{4}$ ]]; then
+            echo "::error::publish_tag must match data-vYYYY.MM.DD.HHMM."
+            exit 1
+          fi
+          if ! command -v gh >/dev/null; then
+            echo "::error::Install GitHub CLI (gh) for the runner service account."
+            exit 1
+          fi
+          RELEASE_ROOT="$RUNNER_TOOL_CACHE/compromised-keys-releases"
+          BUNDLE_DIR="$RELEASE_ROOT/$PUBLISH_TAG"
+          if [ ! -f "$BUNDLE_DIR/publication.json" ] || [ ! -d "$BUNDLE_DIR/assets" ]; then
+            echo "::error::Retained publication bundle not found: $BUNDLE_DIR"
+            exit 1
+          fi
+          chmod 700 "$RELEASE_ROOT" "$BUNDLE_DIR"
+          echo "RELEASE_ROOT=$RELEASE_ROOT" >> "$GITHUB_ENV"
+
+      - name: Install package
+        run: |
+          "$PYTHON_BIN" -m venv "$RUNNER_TEMP/compromised-keys-venv"
+          source "$RUNNER_TEMP/compromised-keys-venv/bin/activate"
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install ".[release]"
+          echo "$RUNNER_TEMP/compromised-keys-venv/bin" >> "$GITHUB_PATH"
+        timeout-minutes: 15
+
+      - name: Publish retained assets with retries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m compromised_keys.release_publish publish \
+            --root "$RELEASE_ROOT" \
+            --tag "$PUBLISH_TAG" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## Retained data release publication"
+            echo
+            echo "- Data version: \`$PUBLISH_TAG\`"
+            echo "- Upload attempts per asset: \`$RELEASE_UPLOAD_ATTEMPTS\`"
+            echo "- Upload timeout per attempt: \`${RELEASE_UPLOAD_TIMEOUT_SECONDS}s\`"
+          } >> "$GITHUB_STEP_SUMMARY"

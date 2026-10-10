@@ -65,22 +65,24 @@ Never remove the operational database to retry a failed run; back it up independ
 ## Operations and recovery
 
 Verified bundles persist at `$RUNNER_TOOL_CACHE/compromised-keys-releases/<version>/`.
-After upload failure, dispatch **Daily Data Sync** with `publish_tag` set to the version
-in the failed job summary and `bootstrap=false`:
+After upload failure, dispatch **Publish Retained Data Release** with `publish_tag` set
+to the version in the failed job summary:
 
 ```bash
-gh workflow run daily_sync.yml --ref main \
-  -f publish_tag=data-v2026.09.20.1200 -f bootstrap=false
+gh workflow run publish_release.yml --ref main \
+  -f publish_tag=data-v2026.09.20.1200
 ```
 
-This mode verifies and publishes the saved bundle without reading the operational
+This workflow verifies and publishes the saved bundle without reading the operational
 database or repeating sync, export, or compression. **Re-run jobs** retains the original
-inputs and will repeat sync if that was the original mode. Missing or corrupt bundles
-fail immediately; only versions retained by this workflow support publication retries.
+inputs and will repeat sync if that was the original mode. The old `publish_tag` input on
+**Daily Data Sync** remains available for compatibility, but the dedicated workflow is
+the preferred recovery path. Missing or corrupt bundles fail immediately; only versions
+retained by this workflow support publication retries.
 Keep this directory on persistent storage. Successful bundles receive a `published`
 marker and can be removed under your retention policy; retain and back up unpublished bundles.
 
-Each file gets up to four upload attempts, each capped at ten minutes. Remote digests
+Each file gets up to six upload attempts, each capped at fifteen minutes. Remote digests
 are checked before retrying, so a completed upload is reused even after a lost response.
 Fixed versions stay in draft until all assets verify; published versions are never
 overwritten. The rolling alias is updated last, with checksums uploaded last. Its update

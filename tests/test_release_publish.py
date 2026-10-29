@@ -1,5 +1,7 @@
 import json
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -76,17 +78,22 @@ class FakeGitHub(GitHubPublisher):
 def test_resume_upload_after_network_failure(monkeypatch, bundle):
     github = FakeGitHub(REPO)
     monkeypatch.setattr(release_publish, "GitHubPublisher", lambda _repo: github)
-    monkeypatch.setattr(release_publish.time, "sleep", lambda _: None)
+    waits = []
+    monkeypatch.setattr(release_publish.time, "sleep", waits.append)
     github.fail_upload = "before"
-    with pytest.raises(ReleaseAssetError, match="4 attempts"):
+    with pytest.raises(ReleaseAssetError, match="6 attempts"):
         publish_bundle(bundle, TAG, REPO)
+    assert len(github.uploads) == 6
+    assert waits == [60, 120, 240, 300, 300]
     assert github.releases[TAG]["draft"]
     assert "data-latest" not in github.releases
     assert (bundle / TAG / "assets" / "compromised_keys.db.zst").exists()
 
     github.fail_upload = "after"
     github.uploads.clear()
+    waits.clear()
     publish_bundle(bundle, TAG, REPO)
+    assert waits == []
     assert not github.releases[TAG]["draft"]
     assert not github.releases["data-latest"]["draft"]
     assert len(github.uploads) == 2 * (len(release_publish.ASSETS) + 1)
@@ -147,8 +154,6 @@ def test_stage_preserves_existing_version(bundle, tmp_path):
 
 
 def test_release_network_failure_is_not_absence(monkeypatch):
-    from types import SimpleNamespace
-
     responses = iter(
         [
             SimpleNamespace(returncode=1, stderr="connection reset", stdout=""),
@@ -158,3 +163,59 @@ def test_release_network_failure_is_not_absence(monkeypatch):
     monkeypatch.setattr(release_publish.subprocess, "run", lambda *a, **k: next(responses))
     monkeypatch.setattr(release_publish.time, "sleep", lambda _: None)
     assert GitHubPublisher(REPO).release(TAG) == {"draft": True}
+
+
+@pytest.mark.parametrize(
+    "failure", ["TLS handshake timeout", "HTTP 503", "HTTP 403: rate limit exceeded", "timeout"]
+)
+def test_request_retry_backoff_and_exhaustion(monkeypatch, failure):
+    calls = []
+    waits = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        return SimpleNamespace(returncode=1, stderr=failure, stdout="")
+
+    monkeypatch.setattr(release_publish.subprocess, "run", run)
+    monkeypatch.setattr(release_publish.time, "sleep", waits.append)
+    with pytest.raises(ReleaseAssetError):
+        GitHubPublisher(REPO).release(TAG)
+    assert len(calls) == 6
+    assert waits == [60, 120, 240, 300, 300]
+
+
+def test_upload_permission_error_is_not_retried(monkeypatch, bundle):
+    github = FakeGitHub(REPO)
+    github.ensure_release(TAG, COMMIT, "test")
+    monkeypatch.setattr(release_publish, "GitHubPublisher", lambda _: github)
+    monkeypatch.setattr(
+        release_publish.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stderr="HTTP 403: forbidden", stdout=""),
+    )
+    monkeypatch.setattr(github, "_gh", GitHubPublisher._gh.__get__(github))
+    monkeypatch.setattr(
+        release_publish.time, "sleep", lambda _: pytest.fail("Retried permission error")
+    )
+    with pytest.raises(release_publish.PermanentGitHubError, match="403"):
+        publish_bundle(bundle, TAG, REPO)
+
+
+def test_retry_settings_are_configurable(monkeypatch):
+    monkeypatch.setenv("RELEASE_REQUEST_ATTEMPTS", "2")
+    monkeypatch.setenv("RELEASE_RETRY_DELAY_SECONDS", "90")
+    waits = []
+    monkeypatch.setattr(release_publish.time, "sleep", waits.append)
+    monkeypatch.setattr(
+        release_publish.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stderr="connection reset", stdout=""),
+    )
+    with pytest.raises(ReleaseAssetError):
+        GitHubPublisher(REPO).release(TAG)
+    assert waits == [90]
+    monkeypatch.setenv("RELEASE_RETRY_DELAY_SECONDS", "0")
+    with pytest.raises(ReleaseAssetError, match="positive integer"):
+        GitHubPublisher(REPO)

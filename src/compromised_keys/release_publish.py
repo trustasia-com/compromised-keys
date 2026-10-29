@@ -30,6 +30,10 @@ ASSETS = {
 }
 
 
+class PermanentGitHubError(ReleaseAssetError):
+    """A request cannot succeed without correcting credentials or parameters."""
+
+
 def validate_tag(tag: str) -> str:
     if not re.fullmatch(r"data-v\d{4}\.\d{2}\.\d{2}\.\d{4}", tag):
         raise ReleaseAssetError("Invalid data release tag")
@@ -82,8 +86,30 @@ class GitHubPublisher:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise ReleaseAssetError("Invalid GitHub repository")
         self.repository = repository
+        settings = {
+            "request_attempts": ("RELEASE_REQUEST_ATTEMPTS", 6),
+            "upload_attempts": ("RELEASE_UPLOAD_ATTEMPTS", 6),
+            "upload_timeout": ("RELEASE_UPLOAD_TIMEOUT_SECONDS", 900),
+            "retry_delay": ("RELEASE_RETRY_DELAY_SECONDS", 60),
+            "retry_max_delay": ("RELEASE_RETRY_MAX_DELAY_SECONDS", 300),
+        }
+        for attribute, (variable, default) in settings.items():
+            try:
+                value = int(os.environ.get(variable, str(default)))
+            except ValueError as error:
+                raise ReleaseAssetError(f"{variable} must be a positive integer") from error
+            if value < 1:
+                raise ReleaseAssetError(f"{variable} must be a positive integer")
+            setattr(self, attribute, value)
 
-    def _gh(self, *args, missing_ok=False, attempts=4, timeout=120):
+    def _wait_before_retry(self, attempt, attempts, context):
+        delay = min(self.retry_delay * 2**attempt, self.retry_max_delay)
+        print(f"{context}; retry {attempt + 2}/{attempts} in {delay}s", flush=True)
+        time.sleep(delay)
+
+    def _gh(self, *args, missing_ok=False, attempts=None, timeout=120):
+        if attempts is None:
+            attempts = self.request_attempts
         for attempt in range(attempts):
             try:
                 result = subprocess.run(
@@ -94,17 +120,15 @@ class GitHubPublisher:
                 if missing_ok and "(HTTP 404)" in result.stderr:
                     return None
                 error = result.stderr.strip()
-                if re.search(r"HTTP (400|401|403|404|422)\b", error):
-                    raise ReleaseAssetError(error)
+                rate_limited = "rate limit" in error.lower()
+                if re.search(r"HTTP (400|401|403|404|422)\b", error) and not rate_limited:
+                    raise PermanentGitHubError(error)
             except subprocess.TimeoutExpired:
                 error = "GitHub command timed out"
             if attempt + 1 < attempts:
-                print(
-                    f"GitHub request failed: {error or 'no error output'}; "
-                    f"retry {attempt + 2}/{attempts}",
-                    flush=True,
+                self._wait_before_retry(
+                    attempt, attempts, f"GitHub request failed: {error or 'no error output'}"
                 )
-                time.sleep(min(5 * 2**attempt, 30))
         raise ReleaseAssetError(error)
 
     def release(self, tag):
@@ -123,7 +147,7 @@ class GitHubPublisher:
 
     def ensure_release(self, tag, commit, notes):
         # Re-read after an uncertain create response instead of creating a second release.
-        for attempt in range(4):
+        for attempt in range(self.request_attempts):
             existing = self.release(tag)
             if existing is not None:
                 if tag != "data-latest" and existing["target_commitish"] != commit:
@@ -146,10 +170,14 @@ class GitHubPublisher:
                     notes,
                     attempts=1,
                 )
-            except ReleaseAssetError:
-                if attempt == 3:
+            except PermanentGitHubError:
+                raise
+            except ReleaseAssetError as error:
+                if attempt + 1 == self.request_attempts:
                     raise
-                time.sleep(5 * (attempt + 1))
+                self._wait_before_retry(
+                    attempt, self.request_attempts, f"Release creation failed: {error}"
+                )
         existing = self.release(tag)
         if existing is None:
             raise ReleaseAssetError("Release creation could not be confirmed")
@@ -180,13 +208,7 @@ class GitHubPublisher:
     def publish(self, tag, commit, assets, checksums, notes):
         release = self.ensure_release(tag, commit, notes)
         mutable = tag == "data-latest" or release["draft"]
-        try:
-            upload_attempts = int(os.environ.get("RELEASE_UPLOAD_ATTEMPTS", "4"))
-            upload_timeout = int(os.environ.get("RELEASE_UPLOAD_TIMEOUT_SECONDS", "600"))
-        except ValueError as error:
-            raise ReleaseAssetError("Release upload retry settings must be integers") from error
-        if upload_attempts < 1 or upload_timeout < 1:
-            raise ReleaseAssetError("Release upload retry settings must be positive")
+        upload_attempts = self.upload_attempts
         expected = set(checksums)
         remote_names = {a["name"] for a in release["assets"]}
         obsolete = remote_names - expected
@@ -209,6 +231,10 @@ class GitHubPublisher:
                     raise ReleaseAssetError(
                         f"Upload failed after {upload_attempts} attempts: {tag}/{name}"
                     )
+                if attempt:
+                    self._wait_before_retry(
+                        attempt - 1, upload_attempts, f"Asset not verified: {tag}/{name}"
+                    )
                 print(
                     f"Uploading {tag}/{name}, attempt {attempt + 1}/{upload_attempts}",
                     flush=True,
@@ -223,12 +249,13 @@ class GitHubPublisher:
                         self.repository,
                         "--clobber",
                         attempts=1,
-                        timeout=upload_timeout,
+                        timeout=self.upload_timeout,
                     )
+                except PermanentGitHubError:
+                    raise
                 except ReleaseAssetError as error:
                     # An EOF can arrive after GitHub has stored the asset. Verify before retrying.
                     print(f"Upload attempt failed: {error}", flush=True)
-                    time.sleep(min(5 * 2**attempt, 30))
         for name in obsolete:
             self._gh("release", "delete-asset", tag, name, "--repo", self.repository, "--yes")
         release = self.release(tag)

@@ -70,7 +70,12 @@ gh workflow run publish_release.yml --ref main \
 专用 runner 必须保留这个目录；上传成功后会生成 `published` 标记，可按内部保留策略清理
 已发布目录，尚未发布的目录应保留并备份。
 
-每个文件最多上传 6 次，每次上传最多等待 15 分钟；重试前核对服务端摘要，已完整上传的文件
+每个文件最多上传 6 次，每次上传最多等待 15 分钟。API 请求遇到网络故障、服务端错误和限流时
+也最多尝试 6 次，重试间隔依次为 60、120、240、300、300 秒；权限和请求参数错误直接报错。
+发布阶段最多运行 4 小时，超时后仍可使用保留的版本继续发布。两个 workflow 中可通过
+`RELEASE_REQUEST_ATTEMPTS`、`RELEASE_UPLOAD_ATTEMPTS`、`RELEASE_UPLOAD_TIMEOUT_SECONDS`、
+`RELEASE_RETRY_DELAY_SECONDS` 和 `RELEASE_RETRY_MAX_DELAY_SECONDS` 调整设置。
+重试前核对服务端摘要，已完整上传的文件
 不会重复传输。不可变版本先保留为草稿，全部资产校验通过后才公开。已公开版本只允许校验，
 不允许覆盖。`data-latest` 最后更新、校验文件最后上传；更新不是原子操作，消费方必须校验
 `SHA256SUMS`。重试旧版本不会覆盖已指向更新版本的 `data-latest`。

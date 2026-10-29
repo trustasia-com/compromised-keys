@@ -29,6 +29,9 @@ jobs:
       PYTHONUNBUFFERED: "1"
       RELEASE_UPLOAD_ATTEMPTS: "6"
       RELEASE_UPLOAD_TIMEOUT_SECONDS: "900"
+      RELEASE_REQUEST_ATTEMPTS: "6"
+      RELEASE_RETRY_DELAY_SECONDS: "60"
+      RELEASE_RETRY_MAX_DELAY_SECONDS: "300"
 
     steps:
       - name: Checkout trusted source
@@ -96,4 +99,6 @@ jobs:
             echo "- Data version: \`$PUBLISH_TAG\`"
             echo "- Upload attempts per asset: \`$RELEASE_UPLOAD_ATTEMPTS\`"
             echo "- Upload timeout per attempt: \`${RELEASE_UPLOAD_TIMEOUT_SECONDS}s\`"
+            echo "- API attempts per request: \`$RELEASE_REQUEST_ATTEMPTS\`"
+            echo "- Retry delay: \`${RELEASE_RETRY_DELAY_SECONDS}s\`, doubling up to \`${RELEASE_RETRY_MAX_DELAY_SECONDS}s\`"
           } >> "$GITHUB_STEP_SUMMARY"

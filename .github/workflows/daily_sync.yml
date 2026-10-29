@@ -40,6 +40,9 @@ jobs:
       PYTHONUNBUFFERED: "1"
       RELEASE_UPLOAD_ATTEMPTS: "6"
       RELEASE_UPLOAD_TIMEOUT_SECONDS: "900"
+      RELEASE_REQUEST_ATTEMPTS: "6"
+      RELEASE_RETRY_DELAY_SECONDS: "60"
+      RELEASE_RETRY_MAX_DELAY_SECONDS: "300"
       PUBLISH_TAG: ${{ inputs.publish_tag }}
 
     steps:
@@ -231,7 +234,7 @@ jobs:
         run: |
           python -m compromised_keys.release_publish publish \
             --root "$RELEASE_ROOT" --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
-        timeout-minutes: 120
+        timeout-minutes: 240
 
       - name: Write job summary
         if: always()

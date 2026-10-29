@@ -84,6 +84,12 @@ marker and can be removed under your retention policy; retain and back up unpubl
 
 Each file gets up to six upload attempts, each capped at fifteen minutes. Remote digests
 are checked before retrying, so a completed upload is reused even after a lost response.
+API requests also get up to six attempts for network failures, server errors, and rate
+limits. Retry delays increase through 60, 120, 240, 300, and 300 seconds; permission and
+invalid-request errors fail immediately. The publication stage has a four-hour budget;
+if it expires, the saved bundle can still be resumed. These settings are controlled by
+`RELEASE_REQUEST_ATTEMPTS`, `RELEASE_UPLOAD_ATTEMPTS`, `RELEASE_UPLOAD_TIMEOUT_SECONDS`,
+`RELEASE_RETRY_DELAY_SECONDS`, and `RELEASE_RETRY_MAX_DELAY_SECONDS` in both workflows.
 Fixed versions stay in draft until all assets verify; published versions are never
 overwritten. The rolling alias is updated last, with checksums uploaded last. Its update
 is not atomic, so consumers must verify `SHA256SUMS`. Retrying an older version does not

@@ -6,6 +6,7 @@
 - [数据模型](data-model.md)
 - [数据源、结果与重试](sources-and-retries.md)
 - [运行手册](operations.md)
+- [数据依赖方接入指南](consumer-integration.md)
 - [内部 Runner 与首个数据发布](runner-and-bootstrap.md)
 - [发布流程与质量门禁](release-process.md)
 - [发布数据字段](../data-schema.md)

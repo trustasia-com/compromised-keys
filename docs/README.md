@@ -8,6 +8,7 @@ operator-facing material and link back to the normative English documents.
 - [Published data schema](data-schema.md)
 - [Sources, outcomes, and retries](sources-and-retries.md)
 - [Operations](operations.md)
+- [Consumer integration](consumer-integration.md)
 - [Internal runner and initial data bootstrap](runner-and-bootstrap.md)
 - [Release process and quality gates](release-process.md)
 - [中文文档](zh-CN/README.md)

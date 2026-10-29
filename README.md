@@ -229,6 +229,7 @@ is downloaded; retry if verification detects an inconsistent asset set.
 - [Data model](docs/data-model.md) and [published schema](docs/data-schema.md)
 - [Source outcomes and retry policy](docs/sources-and-retries.md)
 - [Operations](docs/operations.md)
+- [Consumer integration](docs/consumer-integration.md)
 - [Internal runner and initial data bootstrap](docs/runner-and-bootstrap.md)
 - [Release gates](docs/release-process.md)
 - [Chinese documentation index](docs/zh-CN/README.md)

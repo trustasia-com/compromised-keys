@@ -20,6 +20,39 @@ def bundle(tmp_path):
     assets.mkdir()
     for name in release_publish.ASSETS:
         (assets / name).write_text(json.dumps({"version": TAG, "name": name}))
+    (assets / "db_stats.json").write_text(
+        json.dumps(
+            {
+                "total_revoked": 1200,
+                "total_with_public_key": 1000,
+                "missing_public_key": 200,
+                "unique_public_keys": 900,
+                "cleaned": 0,
+                "active_exclusions": 2,
+            }
+        )
+    )
+    (assets / "db-manifest.json").write_text(
+        json.dumps(
+            {
+                "sync_status": {
+                    "database_before": {
+                        "total_revoked": 1100,
+                        "total_with_public_key": 850,
+                        "missing_public_key": 250,
+                        "unique_public_keys": 800,
+                        "cleaned": 0,
+                        "active_exclusions": 2,
+                    },
+                    "release": {"status": "degraded"},
+                    "stages": {
+                        "ct": {"status": "ok", "updated": 130},
+                        "crtsh": {"status": "degraded", "updated": 20, "error": "PRIVATE_URL"},
+                    },
+                }
+            }
+        )
+    )
     _write_checksums(assets.iterdir(), assets / "SHA256SUMS")
     root = tmp_path / "retained"
     assert stage_release(assets, root, COMMIT, REPO) == TAG
@@ -96,11 +129,40 @@ def test_resume_upload_after_network_failure(monkeypatch, bundle):
     assert waits == []
     assert not github.releases[TAG]["draft"]
     assert not github.releases["data-latest"]["draft"]
+    notes = github.releases[TAG]["body"]
+    assert notes == github.releases["data-latest"]["body"]
+    assert "| 1,200 | +100 |" in notes
+    assert "| 200 | -50 |" in notes
+    assert "| 1,000 | +150 |" in notes
+    assert "| CT | ok | 130 |" in notes
+    assert "| crt.sh | degraded | 20 |" in notes
+    assert "PRIVATE_URL" not in notes
     assert len(github.uploads) == 2 * (len(release_publish.ASSETS) + 1)
     assert github.uploads[-1] == ("data-latest", "SHA256SUMS")
     github.uploads.clear()
     publish_bundle(bundle, TAG, REPO)
     assert github.uploads == []
+    assert github.releases[TAG]["body"] == notes
+
+
+def test_old_bundle_notes_do_not_invent_changes(bundle):
+    assets = bundle / TAG / "assets"
+    (assets / "db-manifest.json").write_text("{}")
+    notes = release_publish.release_notes(TAG, COMMIT, assets)
+    assert "| 1,200 | N/A |" in notes
+    assert "| CT | unknown | N/A |" in notes
+    assert "previous published release" in notes
+
+
+def test_existing_release_description_is_updated_without_uploads(monkeypatch, bundle):
+    github = FakeGitHub(REPO)
+    monkeypatch.setattr(release_publish, "GitHubPublisher", lambda _: github)
+    publish_bundle(bundle, TAG, REPO)
+    github.releases[TAG]["body"] = "Old description"
+    github.uploads.clear()
+    publish_bundle(bundle, TAG, REPO)
+    assert github.uploads == []
+    assert "| 1,200 | +100 |" in github.releases[TAG]["body"]
 
 
 def test_refuse_to_overwrite_published_version(monkeypatch, bundle):

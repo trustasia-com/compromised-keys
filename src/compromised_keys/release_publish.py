@@ -81,6 +81,63 @@ def stage_release(assets: Path, root: Path, commit: str, repository: str) -> str
     return tag
 
 
+def release_notes(tag: str, commit: str, assets: Path) -> str:
+    """Render only aggregate statistics from the verified, retained release bundle."""
+    stats = json.loads((assets / "db_stats.json").read_text(encoding="utf-8"))
+    manifest = json.loads((assets / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    report = manifest.get("sync_status", {})
+    baseline = report.get("database_before", {})
+
+    def count(value):
+        return f"{value:,}" if type(value) is int else "N/A"
+
+    rows = [
+        ("Active revoked records / 撤销记录", "total_revoked"),
+        ("Records with public keys / 已取得公钥的记录", "total_with_public_key"),
+        ("Missing public key or hash / 缺失公钥或指纹", "missing_public_key"),
+        ("Unique public keys / 去重公钥", "unique_public_keys"),
+        ("Cleaned records / 已清理记录", "cleaned"),
+        ("Active exclusions / 生效的排除规则", "active_exclusions"),
+    ]
+    lines = [
+        f"Compromised Keys Data {tag}",
+        "",
+        "## Database status / 数据库状态",
+        "",
+        "| Metric / 指标 | Current / 当前 | Change this sync / 本次净变化 |",
+        "| --- | ---: | ---: |",
+    ]
+    for label, key in rows:
+        current, previous = stats.get(key), baseline.get(key)
+        delta = (
+            f"{current - previous:+,}" if type(current) is int and type(previous) is int else "N/A"
+        )
+        lines.append(f"| {label} | {count(current)} | {delta} |")
+    lines += [
+        "",
+        "Changes compare the start and end of this synchronization, not the previous published release.",
+        "变化以本次同步开始和结束时的数据库为基准，不是与上一个已发布版本比较。",
+        "N/A means the retained bundle did not record this value; it does not mean zero.",
+        "N/A 表示该批次未记录此项，不代表零。",
+        "",
+        "## Supplementation / 本次公钥补全",
+        "",
+        "| Source / 来源 | Status / 状态 | Updated records / 补全记录数 |",
+        "| --- | --- | ---: |",
+    ]
+    for key, label in (("ct", "CT"), ("crtsh", "crt.sh")):
+        stage = report.get("stages", {}).get(key, {})
+        status = stage.get("status", "unknown")
+        if status not in {"ok", "degraded", "failed", "skipped"}:
+            status = "unknown"
+        lines.append(f"| {label} | {status} | {count(stage.get('updated'))} |")
+    status = report.get("release", {}).get("status")
+    if status in {"ready", "degraded"}:
+        lines += ["", f"Release gate / 发布状态: `{status}`"]
+    lines += ["", f"Source commit: {commit}", "Verify assets with SHA256SUMS."]
+    return "\n".join(lines)
+
+
 class GitHubPublisher:
     def __init__(self, repository: str):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -264,7 +321,7 @@ class GitHubPublisher:
         for asset in release["assets"]:
             if not self.matches(tag, asset, assets / asset["name"], checksums[asset["name"]]):
                 raise ReleaseAssetError("Remote checksum verification failed")
-        if release["draft"] or tag == "data-latest":
+        if release["draft"] or tag == "data-latest" or release.get("body") != notes:
             self._gh(
                 "release",
                 "edit",
@@ -291,9 +348,7 @@ def publish_bundle(root: Path, tag: str, repository: str):
     commit = publication["commit"]
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ReleaseAssetError("Invalid publication source commit")
-    notes = (
-        f"Compromised Keys Data {tag}\n\nSource commit: {commit}\nVerify assets with SHA256SUMS."
-    )
+    notes = release_notes(tag, commit, bundle / "assets")
     publisher = GitHubPublisher(repository)
     publisher.publish(tag, commit, bundle / "assets", checksums, notes)
     latest = publisher.release("data-latest")

@@ -76,6 +76,31 @@ async def test_sync_failure_retains_blocked_report(monkeypatch, data_manager, fa
     assert error.value.report["stages"][failed_stage]["status"] == "failed"
 
 
+async def test_sync_retains_baseline_for_release_changes(monkeypatch, data_manager, sample_certs):
+    manager = CompromisedKeysManager.__new__(CompromisedKeysManager)
+    manager.data_manager = data_manager
+    manager.ct_enabled = False
+    before = data_manager.get_db_stats()
+
+    async def crl_sync():
+        data_manager.save_revoked_certs(sample_certs)
+        return {}
+
+    monkeypatch.setattr(manager, "crl_sync_only", crl_sync)
+    monkeypatch.setattr(
+        manager, "_export_all", lambda: ("test-version", data_manager.get_db_stats())
+    )
+    monkeypatch.setattr(manager, "_release_gate", lambda *args: {"status": "ready"})
+    report = await manager.run_once(include_crtsh=False)
+    assert report["database_before"] == before
+    assert report["database"]["total_revoked"] - before["total_revoked"] == len(sample_certs)
+    import sqlite3
+
+    with sqlite3.connect(data_manager.db_path) as connection:
+        saved = json.loads(connection.execute("SELECT report_json FROM sync_runs").fetchone()[0])
+    assert saved["database_before"] == before
+
+
 async def test_crl_sync_uses_tls_scope_and_full_crl_mirrors(monkeypatch):
     calls = []
 

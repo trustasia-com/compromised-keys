@@ -267,7 +267,12 @@ class CompromisedKeysManager:
         run_id = str(uuid4())
         baseline = self.data_manager.get_db_stats()
         previous_crl = self.data_manager.get_previous_source_stats("crl", run_id)
-        report: Dict = {"run_id": run_id, "started_at": _utcnow_iso(), "stages": {}}
+        report: Dict = {
+            "run_id": run_id,
+            "started_at": _utcnow_iso(),
+            "database_before": baseline,
+            "stages": {},
+        }
         self.data_manager.start_sync_run(run_id)
         stage_started = time.monotonic()
 

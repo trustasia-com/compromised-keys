@@ -26,6 +26,7 @@ def _write_required_exports(export_dir: Path, data_manager, status="ready") -> d
         "run_id": "test-run",
         "release": {"status": status},
         "database": stats,
+        "database_before": stats.copy(),
         "stages": {"export": {"status": "ok", "version": version}},
     }
     data_manager.start_sync_run(report["run_id"])
@@ -68,6 +69,7 @@ def test_prepare_and_restore_release_round_trip(tmp_path, data_manager, sample_c
     restored_manifest = restore_release(output_dir, restored)
 
     assert manifest["database"]["sha256"] == restored_manifest["database"]["sha256"]
+    assert manifest["sync_status"]["database_before"] == report["database_before"]
     assert check_database(restored)["integrity_check"] == "ok"
     assert check_database(restored)["tables"]["revoked_certs"] == len(sample_certs)
     assert (output_dir / "compromised_keys.db.zst").is_file()

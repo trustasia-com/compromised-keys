@@ -43,6 +43,13 @@ Every release contains the compressed database, gzip-compressed CSV, Bloom Filte
 missing-key and database statistics, manifest, and checksums. Consumers should pin
 immutable tags and verify all assets before use.
 
+Release notes show current database counts, their net changes during that synchronization,
+and CT/crt.sh supplementation counts. Changes are relative to the start of the same sync,
+not the previous published release; unique keys and certificate records are separate metrics.
+Notes use the checksummed retained bundle, so publication retries preserve the original
+statistics. Older bundles without a baseline show `N/A` for changes. Only aggregate values
+are included in notes, never raw diagnostic messages.
+
 CRL failure reports and sync logs remain on the runner; they are not uploaded as
 release assets or Actions artifacts. The public SQLite snapshot omits CRL failure
 codes, counters, error messages and failure timestamps, while preserving downloaded

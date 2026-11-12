@@ -1,5 +1,11 @@
 # Sources, Outcomes, And Retries
 
+CRL collection uses only CCADB intermediate certificates with `TLS Capable = True`.
+The API snapshot retains all records for scope counts but normalizes CRL URL arrays
+only for eligible intermediates; other records have empty URL arrays. Invalid arrays
+in eligible records stop synchronization and identify the record ID and field in the
+runner log. They are not repaired or skipped automatically.
+
 Full sync queries the operator CT first, then crt.sh for records still missing keys.
 crt.sh honors its own retry times and exact exclusions, selecting newest revocations
 first and missing or invalid dates last. It stops at the record limit (5000 by default

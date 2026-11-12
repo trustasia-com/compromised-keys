@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives import serialization
 
 from compromised_keys import config
 from compromised_keys.atomic_io import atomic_write
+from compromised_keys.parser import is_tls_capable_intermediate
 from compromised_keys.public_http import PublicResolver, public_url_middleware, validate_public_url
 
 logger = logging.getLogger(__name__)
@@ -77,20 +78,28 @@ class Downloader:
         data = cls._ccadb_section(record, "CertificateData")
         endpoints = cls._ccadb_section(record, "PertainingToCertificatesIssued")
         capabilities = cls._ccadb_section(record, "Capabilities")
-        return {
+        row = {
             "Salesforce Record ID": certificate.get("CCADBUniqueID", ""),
             "CA Owner": certificate.get("CAOwner", ""),
             "Certificate Name": certificate.get("CertificateName", ""),
             "SHA-256 Fingerprint": data.get("SHA256Fingerprint", ""),
             "TLS Capable": capabilities.get("TLSCapable", ""),
             "Certificate Record Type": certificate.get("CertificateRecordType", ""),
-            "JSON Array of All Full CRL URLs": cls._ccadb_json_array(
-                endpoints.get("JSONArrayOfAllFullCRLURLs")
-            ),
-            "JSON Array of Partitioned CRLs": cls._ccadb_json_array(
-                endpoints.get("JSONArrayOfPartitionedCRLs")
-            ),
         }
+        # Only eligible intermediates supply CRLs; unrelated malformed fields must
+        # not block their snapshot. Retain every record for scope statistics.
+        eligible = is_tls_capable_intermediate(row)
+        for column, field in (
+            ("JSON Array of All Full CRL URLs", "JSONArrayOfAllFullCRLURLs"),
+            ("JSON Array of Partitioned CRLs", "JSONArrayOfPartitionedCRLs"),
+        ):
+            try:
+                row[column] = cls._ccadb_json_array(endpoints.get(field)) if eligible else "[]"
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Invalid CCADB record {row['Salesforce Record ID']!r} field {field}: {error}"
+                ) from error
+        return row
 
     def _request_ccadb_page(
         self,

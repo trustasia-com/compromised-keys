@@ -2,12 +2,14 @@
 
 import asyncio
 import csv
+import json
 import os
 from contextlib import asynccontextmanager
 
 import pytest
 
 from compromised_keys.downloader import Downloader
+from compromised_keys.parser import CCADBParser
 
 
 class _FakeCCADBResponse:
@@ -97,6 +99,52 @@ def test_ccadb_empty_url_representations(value):
     assert Downloader._ccadb_json_array(value) == "[]"
 
 
+@pytest.mark.parametrize("field", ["JSONArrayOfAllFullCRLURLs", "JSONArrayOfPartitionedCRLs"])
+@pytest.mark.parametrize(
+    "record_type,tls_capable",
+    [("Root Certificate", False), ("Root Certificate", True), ("Intermediate Certificate", False)],
+)
+def test_ccadb_out_of_scope_malformed_urls_do_not_block(field, record_type, tls_capable):
+    record = {
+        "CertificateInformation": {
+            "CCADBUniqueID": "A013253",
+            "CertificateRecordType": record_type,
+        },
+        "Capabilities": {"TLSCapable": tls_capable},
+        "PertainingToCertificatesIssued": {field: '["https://example.test/a.crl"]]'},
+    }
+    row = Downloader._flatten_ccadb_record(record)
+    assert row["Salesforce Record ID"] == "A013253"
+    assert row["JSON Array of All Full CRL URLs"] == "[]"
+    assert row["JSON Array of Partitioned CRLs"] == "[]"
+
+
+@pytest.mark.parametrize("field", ["JSONArrayOfAllFullCRLURLs", "JSONArrayOfPartitionedCRLs"])
+def test_ccadb_eligible_malformed_urls_preserve_previous_snapshot(
+    monkeypatch, downloader, field, caplog
+):
+    record = {
+        "CertificateInformation": {
+            "CCADBUniqueID": "bad-intermediate",
+            "CertificateRecordType": "Intermediate Certificate",
+        },
+        "Capabilities": {"TLSCapable": True},
+        "PertainingToCertificatesIssued": {field: '["https://example.test/a.crl"]]'},
+    }
+    path = os.path.join(downloader.cache_dir, "ccadb_api_all_certificate_records.csv")
+    with open(path, "w") as stream:
+        stream.write("previous snapshot")
+    monkeypatch.setattr("compromised_keys.downloader.config.CCADB_CACHE_TTL_HOURS", 0)
+    monkeypatch.setattr("compromised_keys.downloader.config.CCADB_API_START_DECADE", 2020)
+    monkeypatch.setattr("compromised_keys.downloader.config.CCADB_API_END_DECADE", 2020)
+    monkeypatch.setattr(downloader, "_download_ccadb_partition", lambda *args: [record])
+    assert downloader.download_ccadb_records() is None
+    assert "bad-intermediate" in caplog.text and field in caplog.text
+    with open(path) as stream:
+        assert stream.read() == "previous snapshot"
+    assert not os.path.exists(path + ".tmp")
+
+
 @pytest.fixture
 def downloader(tmp_path, data_manager):
     return Downloader(
@@ -147,7 +195,9 @@ def test_download_ccadb_records_paginates_and_normalizes(monkeypatch, downloader
             },
             "RootStoreStatus": {"ChromeStatus": "Not Trusted"},
             "CertificateData": {},
-            "PertainingToCertificatesIssued": {},
+            "PertainingToCertificatesIssued": {
+                "JSONArrayOfAllFullCRLURLs": '["https://example.test/root.crl"]]',
+            },
             "Capabilities": {},
         },
     ]
@@ -162,6 +212,11 @@ def test_download_ccadb_records_paginates_and_normalizes(monkeypatch, downloader
     with open(path, newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 2
+    scope = CCADBParser.load_intermediate_scope(path)
+    assert scope.records_total == 2
+    assert scope.eligible_intermediates == 1
+    assert scope.crl_sources[0]["urls"] == ["https://example.test/full.crl"]
+    assert json.loads(rows[1]["JSON Array of All Full CRL URLs"]) == []
     assert rows[0]["Salesforce Record ID"] == "record-1"
     assert rows[0]["TLS Capable"] == "True"
     assert rows[0]["JSON Array of All Full CRL URLs"] == ('["https://example.test/full.crl"]')

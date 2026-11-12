@@ -80,7 +80,7 @@ gh workflow run publish_release.yml --ref main \
 不允许覆盖。`data-latest` 最后更新、校验文件最后上传；更新不是原子操作，消费方必须校验
 `SHA256SUMS`。重试旧版本不会覆盖已指向更新版本的 `data-latest`。
 
-- `0 18 * * *` 表示 UTC 18:00，即上海时间次日 02:00。
+- `0 20 * * *` 表示 UTC 20:00，即上海时间次日 04:00。
 - 工作流不使用 `pull_request_target`；专用 runner 不得分配给公开 PR。
 - 滚动别名更新失败时，使用同一 `publish_tag` 重试，已公开的不可变版本会校验后跳过上传。
 - 首发成功后可删除 `INITIAL_DB_PATH`，或使其继续指向只读受控存储；只要

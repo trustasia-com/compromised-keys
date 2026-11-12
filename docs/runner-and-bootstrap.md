@@ -95,7 +95,7 @@ overwritten. The rolling alias is updated last, with checksums uploaded last. It
 is not atomic, so consumers must verify `SHA256SUMS`. Retrying an older version does not
 replace a newer `data-latest`.
 
-- The schedule `0 18 * * *` is 18:00 UTC, or 02:00 Asia/Shanghai on the following
+- The schedule `0 20 * * *` is 20:00 UTC, or 04:00 Asia/Shanghai on the following
   calendar day.
 - The workflow does not use `pull_request_target` and the dedicated runner must not
   be assigned to public pull requests.

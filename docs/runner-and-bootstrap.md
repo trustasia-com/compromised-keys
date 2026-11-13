@@ -62,6 +62,11 @@ continues this database, preserving increments and failure counters even when a 
 fails or publication is blocked. If it is absent, restore verified `data-latest`.
 Never remove the operational database to retry a failed run; back it up independently.
 
+Both self-hosted workflows mask the runner home, workspace, temporary and tool-cache
+paths before checkout. This does not redact earlier runner-initialization output or
+previous workflow logs. Sync failures expose only allowlisted categories, HTTP status,
+attempt counts and release blockers in the Actions summary; raw diagnostics stay local.
+
 ## Operations and recovery
 
 Verified bundles persist at `$RUNNER_TOOL_CACHE/compromised-keys-releases/<version>/`.

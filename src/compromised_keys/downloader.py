@@ -32,6 +32,12 @@ CCADB_CACHE_FIELDS = (
 )
 
 
+class CCADBRequestError(RuntimeError):
+    def __init__(self, message, diagnostic):
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
 class Downloader:
     def __init__(
         self,
@@ -44,6 +50,16 @@ class Downloader:
         self.max_retries = max_retries or config.CRL_MAX_RETRIES
         self.concurrency = concurrency or config.CRL_DOWNLOAD_CONCURRENCY
         self.data_manager = data_manager
+        self.ccadb_failure = None
+        if (
+            min(
+                config.CCADB_MAX_ATTEMPTS,
+                config.CCADB_RETRY_DELAY_SECONDS,
+                config.CCADB_RETRY_MAX_DELAY_SECONDS,
+            )
+            < 1
+        ):
+            raise ValueError("CCADB attempts and retry delays must be positive")
         if (
             min(self.concurrency, self.max_retries, config.CRL_MAX_BYTES, config.CRL_PARSE_WORKERS)
             < 1
@@ -115,8 +131,7 @@ class Downloader:
             },
             "fieldSets": list(CCADB_FIELD_SETS),
         }
-        last_error = None
-        for attempt in range(self.max_retries):
+        for attempt in range(config.CCADB_MAX_ATTEMPTS):
             try:
                 response = session.post(url, json=payload, timeout=60)
                 response.raise_for_status()
@@ -127,23 +142,60 @@ class Downloader:
                     raise ValueError(body.get("Message") or "CCADB API returned an error")
                 if not isinstance(body.get("Data"), list):
                     raise ValueError("response Data is not a list")
-                pagination = body.get("Meta", {}).get("Pagination")
+                meta = body.get("Meta")
+                pagination = meta.get("Pagination") if isinstance(meta, dict) else None
                 if not isinstance(pagination, dict):
                     raise ValueError("response is missing Meta.Pagination")
                 return body
             except (requests.RequestException, TypeError, ValueError) as error:
-                last_error = error
+                status = (
+                    error.response.status_code
+                    if isinstance(error, requests.HTTPError) and error.response is not None
+                    else None
+                )
+                retryable = (
+                    status in {408, 429}
+                    or (status is not None and 500 <= status <= 599)
+                    or isinstance(error, (requests.ConnectionError, requests.Timeout))
+                ) and not isinstance(error, requests.exceptions.SSLError)
+                code = (
+                    "ccadb_http_error"
+                    if status is not None
+                    else (
+                        "ccadb_invalid_response"
+                        if isinstance(error, (TypeError, ValueError))
+                        else "ccadb_network_error"
+                    )
+                )
+                diagnostic = {
+                    "error_code": code,
+                    "http_status": status,
+                    "attempts": attempt + 1,
+                    "retryable": retryable,
+                    "decade": decade,
+                    "page": page_number,
+                }
                 logger.warning(
                     "CCADB API decade %d page %d attempt %d/%d failed: %s",
                     decade,
                     page_number,
                     attempt + 1,
-                    self.max_retries,
+                    config.CCADB_MAX_ATTEMPTS,
                     error,
                 )
-                if attempt < self.max_retries - 1:
-                    time.sleep(2**attempt)
-        raise RuntimeError(f"CCADB API decade {decade} page {page_number} failed: {last_error}")
+                if not retryable or attempt + 1 == config.CCADB_MAX_ATTEMPTS:
+                    raise CCADBRequestError(
+                        f"CCADB API decade {decade} page {page_number} failed: {error}",
+                        diagnostic,
+                    ) from error
+                delay = min(
+                    config.CCADB_RETRY_DELAY_SECONDS * 2**attempt,
+                    config.CCADB_RETRY_MAX_DELAY_SECONDS,
+                )
+                logger.warning(
+                    "Retrying CCADB decade %d page %d in %d seconds", decade, page_number, delay
+                )
+                time.sleep(delay)
 
     def _download_ccadb_partition(
         self,
@@ -187,6 +239,7 @@ class Downloader:
     def download_ccadb_records(self, url: str = "") -> Optional[str]:
         """Fetch the paginated CCADB API and return a normalized local snapshot."""
         url = url or config.CCADB_API_URL
+        self.ccadb_failure = None
         filename = "ccadb_api_all_certificate_records.csv"
         filepath = os.path.join(self.cache_dir, filename)
         cache_ttl = max(config.CCADB_CACHE_TTL_HOURS, 0) * 3600
@@ -210,6 +263,7 @@ class Downloader:
             or start_decade > end_decade
         ):
             logger.error("Invalid CCADB API decade range: %d-%d", start_decade, end_decade)
+            self.ccadb_failure = {"error_code": "ccadb_invalid_configuration", "retryable": False}
             return None
 
         temp_path = f"{filepath}.tmp"
@@ -229,6 +283,16 @@ class Downloader:
             logger.info("CCADB API snapshot saved to %s (%d records)", filepath, len(all_records))
             return filepath
         except Exception as error:
+            self.ccadb_failure = (
+                error.diagnostic
+                if isinstance(error, CCADBRequestError)
+                else {
+                    "error_code": "ccadb_local_io_error"
+                    if isinstance(error, OSError)
+                    else "ccadb_invalid_data",
+                    "retryable": False,
+                }
+            )
             logger.error("Failed to synchronize CCADB API: %s", error)
             if os.path.exists(temp_path):
                 os.remove(temp_path)

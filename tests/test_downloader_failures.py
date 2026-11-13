@@ -5,10 +5,12 @@ import csv
 import json
 import os
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
+import requests
 
-from compromised_keys.downloader import Downloader
+from compromised_keys.downloader import CCADBRequestError, Downloader
 from compromised_keys.parser import CCADBParser
 
 
@@ -97,6 +99,87 @@ def _semaphore() -> asyncio.Semaphore:
 @pytest.mark.parametrize("value", [None, "", "   ", '""', "null", []])
 def test_ccadb_empty_url_representations(value):
     assert Downloader._ccadb_json_array(value) == "[]"
+
+
+@pytest.mark.parametrize("failure", [500, 503, 408, 429, "timeout", "connection"])
+def test_ccadb_transient_failure_backoff_and_exhaustion(monkeypatch, downloader, failure):
+    calls, waits = [], []
+
+    def post(url, **kwargs):
+        calls.append(kwargs["json"])
+        if failure == "timeout":
+            raise requests.Timeout("private endpoint")
+        if failure == "connection":
+            raise requests.ConnectionError("private endpoint")
+        response = requests.Response()
+        response.status_code = failure
+        raise requests.HTTPError("private endpoint", response=response)
+
+    monkeypatch.setattr("compromised_keys.downloader.time.sleep", waits.append)
+    with pytest.raises(CCADBRequestError) as caught:
+        downloader._request_ccadb_page(SimpleNamespace(post=post), "https://example.test", 1990, 1)
+    assert len(calls) == 6
+    assert all(call == calls[0] for call in calls)
+    assert waits == [60, 120, 240, 300, 300]
+    assert caught.value.diagnostic["attempts"] == 6
+    assert caught.value.diagnostic["retryable"] is True
+    assert "private endpoint" not in json.dumps(caught.value.diagnostic)
+
+
+@pytest.mark.parametrize("failure", [400, 401, 403, 404, "ssl", "json", "json_decode"])
+def test_ccadb_permanent_failure_does_not_retry(monkeypatch, downloader, failure):
+    def post(*args, **kwargs):
+        if failure == "ssl":
+            raise requests.exceptions.SSLError("invalid certificate")
+        if failure == "json":
+            return _FakeCCADBResponse({"Data": "invalid"})
+        if failure == "json_decode":
+            raise requests.exceptions.JSONDecodeError("Invalid JSON", "<html>", 0)
+        response = requests.Response()
+        response.status_code = failure
+        raise requests.HTTPError("denied", response=response)
+
+    monkeypatch.setattr(
+        "compromised_keys.downloader.time.sleep", lambda _: pytest.fail("Unexpected retry")
+    )
+    with pytest.raises(CCADBRequestError) as caught:
+        downloader._request_ccadb_page(SimpleNamespace(post=post), "https://example.test", 1990, 1)
+    assert caught.value.diagnostic["attempts"] == 1
+    assert caught.value.diagnostic["retryable"] is False
+    if failure in {"json", "json_decode"}:
+        assert caught.value.diagnostic["error_code"] == "ccadb_invalid_response"
+
+
+def test_ccadb_retry_resumes_failed_page(monkeypatch, downloader):
+    calls, waits = [], []
+
+    def post(url, **kwargs):
+        page = kwargs["json"]["filters"]["PageNumber"]
+        calls.append(page)
+        if calls == [1, 2]:
+            response = requests.Response()
+            response.status_code = 500
+            raise requests.HTTPError("temporary", response=response)
+        return _FakeCCADBResponse(
+            {
+                "Data": [{"record": page}],
+                "Meta": {
+                    "Pagination": {
+                        "TotalRecords": 2,
+                        "CurrentPageNumber": page,
+                        "NextPageNumber": 2 if page == 1 else 0,
+                    }
+                },
+            }
+        )
+
+    monkeypatch.setattr("compromised_keys.downloader.time.sleep", waits.append)
+    records = downloader._download_ccadb_partition(
+        SimpleNamespace(post=post), "https://example.test", 1990
+    )
+    assert records == [{"record": 1}, {"record": 2}]
+    assert calls == [1, 2, 2]
+    assert waits == [60]
 
 
 @pytest.mark.parametrize("field", ["JSONArrayOfAllFullCRLURLs", "JSONArrayOfPartitionedCRLs"])

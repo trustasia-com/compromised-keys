@@ -46,6 +46,14 @@ jobs:
       PUBLISH_TAG: ${{ inputs.publish_tag }}
 
     steps:
+      - name: Mask local runner paths
+        run: |
+          for path in "$HOME" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$RUNNER_TOOL_CACHE"; do
+            if [ -n "$path" ] && [ "$path" != / ]; then
+              printf '::add-mask::%s\n' "$path"
+            fi
+          done
+
       - name: Checkout trusted source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -253,8 +261,9 @@ jobs:
               python - <<'PY'
           import json
           import os
+          from compromised_keys.sync_summary import render_sync_summary
           report = json.load(open(os.path.join(os.environ["REPORT_DIR"], "sync_report.json"), encoding="utf-8"))
-          print(f"- Release gate: `{report.get('release', {}).get('status', 'unknown')}`")
+          print(render_sync_summary(report))
           PY
             fi
           } >> "$GITHUB_STEP_SUMMARY"

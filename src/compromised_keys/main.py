@@ -23,9 +23,12 @@ logger = logging.getLogger(__name__)
 class SyncError(RuntimeError):
     """Raised when a required synchronization stage cannot complete."""
 
-    def __init__(self, message: str, report: Optional[Dict] = None):
+    def __init__(
+        self, message: str, report: Optional[Dict] = None, diagnostic: Optional[Dict] = None
+    ):
         super().__init__(message)
         self.report = report
+        self.diagnostic = diagnostic or {}
 
 
 def _utcnow_iso() -> str:
@@ -65,7 +68,10 @@ class CompromisedKeysManager:
 
         ccadb_path = self.downloader.download_ccadb_records()
         if not ccadb_path:
-            raise SyncError("CCADB download failed; CRL sync cannot continue")
+            raise SyncError(
+                "CCADB download failed; CRL sync cannot continue",
+                diagnostic=getattr(self.downloader, "ccadb_failure", None),
+            )
 
         try:
             scope = CCADBParser.load_intermediate_scope(ccadb_path)
@@ -281,6 +287,8 @@ class CompromisedKeysManager:
             crl_stats = await self.crl_sync_only()
         except Exception as error:
             report["stages"]["crl"] = {"status": "failed", "error": str(error)}
+            if isinstance(error, SyncError):
+                report["stages"]["crl"].update(error.diagnostic)
             report["release"] = {
                 "status": "blocked",
                 "blockers": ["required_crl_stage_failed"],

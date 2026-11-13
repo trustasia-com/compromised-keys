@@ -170,6 +170,9 @@ CT_SERVER_HOST=https://ct.example.com compromised-keys ct-sync --full-history
 | `CCADB_API_START_DECADE` | `1990` | 获取范围内最早的 `ValidFrom` 年代。 |
 | `CCADB_API_END_DECADE` | `2100` | 获取范围内最晚的 `ValidFrom` 年代。 |
 | `CCADB_CACHE_TTL_HOURS` | `24` | 在该时长内复用本地规范化 API 快照。 |
+| `CCADB_MAX_ATTEMPTS` | `6` | CCADB 每页临时故障的最大尝试次数。 |
+| `CCADB_RETRY_DELAY_SECONDS` | `60` | CCADB 首次重试等待秒数，之后倍增。 |
+| `CCADB_RETRY_MAX_DELAY_SECONDS` | `300` | CCADB 重试等待秒数上限。 |
 | `CRTSH_PG_DSN` | `postgresql://guest@crt.sh:5432/certwatch` | 公开只读 crt.sh 数据库。 |
 | `CRTSH_MODE` | `postgres` | `postgres` 或受限的 `http`。 |
 | `CRTSH_MAX_SECONDS` | `3600` | 每轮 crt.sh 查询时间预算，允许 1–3600 秒。 |

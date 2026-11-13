@@ -164,6 +164,27 @@ async def test_crl_sync_fails_closed_when_ccadb_download_fails():
         await manager.crl_sync_only()
 
 
+async def test_ccadb_diagnostics_reach_sync_report(data_manager):
+    manager = CompromisedKeysManager.__new__(CompromisedKeysManager)
+    manager.data_manager = data_manager
+    diagnostic = {
+        "error_code": "ccadb_http_error",
+        "http_status": 500,
+        "attempts": 6,
+        "retryable": True,
+        "decade": 1990,
+        "page": 1,
+    }
+    manager.downloader = SimpleNamespace(
+        download_ccadb_records=lambda: None, ccadb_failure=diagnostic
+    )
+    with pytest.raises(SyncError) as caught:
+        await manager.run_once(include_crtsh=False)
+    stage = caught.value.report["stages"]["crl"]
+    assert all(stage[key] == value for key, value in diagnostic.items())
+    assert caught.value.report["release"]["status"] == "blocked"
+
+
 class CTProvider:
     async def query_records_async(self, records, concurrency=0):
         by_serial = {record["serial_number"]: record for record in records}

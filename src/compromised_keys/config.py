@@ -26,6 +26,9 @@ CCADB_API_URL = os.environ.get(
 CCADB_API_START_DECADE = int(os.environ.get("CCADB_API_START_DECADE", "1990"))
 CCADB_API_END_DECADE = int(os.environ.get("CCADB_API_END_DECADE", "2100"))
 CCADB_CACHE_TTL_HOURS = int(os.environ.get("CCADB_CACHE_TTL_HOURS", "24"))
+CCADB_MAX_ATTEMPTS = int(os.environ.get("CCADB_MAX_ATTEMPTS", "6"))
+CCADB_RETRY_DELAY_SECONDS = int(os.environ.get("CCADB_RETRY_DELAY_SECONDS", "60"))
+CCADB_RETRY_MAX_DELAY_SECONDS = int(os.environ.get("CCADB_RETRY_MAX_DELAY_SECONDS", "300"))
 
 # Download settings
 CRL_DOWNLOAD_CONCURRENCY = int(os.environ.get("CRL_DOWNLOAD_CONCURRENCY", "50"))

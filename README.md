@@ -186,6 +186,9 @@ details. Optional-source degradation does not suppress other sources. See
 | `CCADB_API_START_DECADE` | `1990` | First `ValidFrom` decade to retrieve. |
 | `CCADB_API_END_DECADE` | `2100` | Last `ValidFrom` decade to retrieve. |
 | `CCADB_CACHE_TTL_HOURS` | `24` | Reuse the normalized local API snapshot for this many hours. |
+| `CCADB_MAX_ATTEMPTS` | `6` | Maximum attempts per CCADB page for transient failures. |
+| `CCADB_RETRY_DELAY_SECONDS` | `60` | Initial delay before retrying a CCADB page; doubles each time. |
+| `CCADB_RETRY_MAX_DELAY_SECONDS` | `300` | Maximum CCADB retry delay. |
 | `CRTSH_PG_DSN` | `postgresql://guest@crt.sh:5432/certwatch` | Public read-only crt.sh database. |
 | `CRTSH_MODE` | `postgres` | `postgres` or rate-limited `http`. |
 | `CRTSH_MAX_SECONDS` | `3600` | Per-run crt.sh query budget, from 1 to 3600 seconds. |

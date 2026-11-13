@@ -6,6 +6,12 @@ only for eligible intermediates; other records have empty URL arrays. Invalid ar
 in eligible records stop synchronization and identify the record ID and field in the
 runner log. They are not repaired or skipped automatically.
 
+CCADB connection failures, timeouts, HTTP 408/429 and 5xx responses retry the same
+page up to six times, waiting 60, 120, 240, 300 and 300 seconds by default. Completed
+pages remain in memory. Other HTTP errors, TLS certificate errors and malformed data
+stop the download. Exhaustion blocks synchronization without replacing the previous
+snapshot. These settings are independent of CRL download retries.
+
 Full sync queries the operator CT first, then crt.sh for records still missing keys.
 crt.sh honors its own retry times and exact exclusions, selecting newest revocations
 first and missing or invalid dates last. It stops at the record limit (5000 by default
